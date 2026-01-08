@@ -1,0 +1,39 @@
+[project]
+name = "one"
+version = "0.1.0"
+description = """
+one aims at seamless integration of robot motion planning and learning,
+with a strong emphasis on simplicity, consistency, and controllability.
+
+The framework only depends on MuJoCo and does not rely on external collision libraries.
+For kinematic planning, collision checking is performed using MuJoCo’s native pipeline
+(mj_kinematics + mj_collision). For dynamic simulation, MuJoCo’s standard time stepping
+(mj_step) is used directly.
+
+Visualization is implemented from scratch on top of pyglet, providing full control
+from low-level rendering primitives such as device buffers, shaders, and render passes
+to high-level abstractions including scenes, kinematic chains, and articulated mechanisms.
+
+The internal data structures are designed to be compatible with both URDF and MJCF XML
+descriptions, enabling unified handling of robot models across different representations
+without forcing premature conversions.
+
+Overall, one is intended as a lightweight yet expressive research framework for studying
+motion planning, learning, and their interaction under a single, coherent simulation backend.
+"""
+authors = [
+  {name = "wanweiwei", email = "wanweiwei07@gmail.com"},
+  {name = "harutonagai", email = "nagai@hlab.sys.es.osaka-u.ac.jp"},
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+"numpy",
+"scipy",
+"pyglet",
+"mujoco",
+"matplotlib",
+]
+
+[tool.setuptools.packages]
+find = { where = ["."], include = ["one"]}
