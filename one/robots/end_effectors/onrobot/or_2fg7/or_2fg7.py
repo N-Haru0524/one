@@ -37,7 +37,7 @@ def get_structure():
         parent_lnk=base_lnk, child_lnk=rgt_fgr_lnk,
         axis=-ouc.StandardAxis.Y,
         pos=np.array([0, 0.019, 0], dtype=np.float32),
-        mmc=(jnt_bl_lf, -1.0, 0.0),
+        mmc=(jnt_bl_lf, 1.0, 0.0),
         lmt_low=0.0, lmt_up=0.019)
     # add links
     structure.add_lnk(base_lnk)
