@@ -1,8 +1,8 @@
 import builtins
 import numpy as np
-from one import oum, ovw, ouc, ossop, ocm, ompsp, ompr, khi_rs007l
+from one import oum, ovw, ouc, ossop, ocm, ompsp, ompp, khi_rs007l
 
-base = ovw.World(cam_pos=(-2, 2, 2), cam_lookat_pos=(0, 0, 0.5), toggle_auto_cam_orbit=False)
+base = ovw.World(cam_pos=(-2, 2, 2), cam_lookat_pos=(0, 0, 0.5))
 builtins.base = base
 oframe = ossop.gen_frame()
 oframe.attach_to(base.scene)
@@ -34,12 +34,12 @@ jlmt_high = robot.structure.compiled.jlmt_high_by_idx
 sspp = ompsp.SpaceProvider.from_box_bounds(lmt_low=jlmt_low,
                                            lmt_high=jlmt_high,
                                            collider=collider,
-                                           max_edge_step=np.pi/180)
-planner = ompr.RRTConnectPlanner(ssp_provider=sspp, step_size=np.pi / 36)
+                                           max_edge_step=np.pi/36)
+# planner = ompp.PRMPlanner(ssp_provider=sspp)
+planner = ompp.LazyPRMPlanner(ssp_provider=sspp)
 start = np.array([0, 0, 0, 0, 0, 0])
 goal = np.array([-oum.pi / 2, -oum.pi / 4, oum.pi / 2, -oum.pi / 2, oum.pi / 4, oum.pi / 3])
-state_list = planner.solve(start=start, goal=goal, verbose=True)
-print(state_list)
+state_list = planner.solve(start=start, goal=goal)
 robot1 = robot.clone()
 robot1.fk(qs=start)
 robot1.rgba = (1, 0, 0, 0.5)
@@ -50,30 +50,6 @@ robot2.rgba = (0, 0, 1, 0.5)
 robot2.attach_to(base.scene)
 counter = [0]
 
-# rrt_iter = planner.solve_iter(start=start, goal=goal,
-#                               verbose=True, max_iters=100000)
-# rrt_states = []
-# final_path = None
-#
-# def update_pose(dt):
-#     global final_path
-#     if final_path is not None:
-#         return
-#     try:
-#         status, data, tree = next(rrt_iter)
-#         if status == "extend_start" or status == "extend_goal":
-#             qs = data
-#             robot.fk(qs=qs)
-#         elif status == "success":
-#             final_path = data
-#             print("RRT finished, path length =", len(final_path))
-#         elif status == "failed":
-#             print("RRT failed")
-#     except StopIteration:
-#         pass
-#
-# base.schedule_interval(update_pose, interval=0.05)
-# base.run()
 
 def update_pose(dt, counter):
     if counter[0] < len(state_list):

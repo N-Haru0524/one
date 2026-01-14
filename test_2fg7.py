@@ -10,7 +10,8 @@ gripper.attach_to(base.scene)
 # base.run()
 
 box = ossop.gen_cylinder(spos=(.3, 0, 0), epos=(.3, 0, .1), radius=.03,
-                         collision_type=ouc.CollisionType.AABB)
+                         collision_type=ouc.CollisionType.AABB,
+                         is_free=True)
 box.attach_to(base.scene)
 # box.toggle_render_collision = True
 # gripper.grasp(box)

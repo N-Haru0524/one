@@ -7,28 +7,13 @@ import one.scene.collision as osc
 
 
 class SceneObject:
-    _auto_counter = {}  # TODO thread safety
 
     @classmethod
-    def auto_name(cls, flag_str=None):
-        if flag_str is None:
-            flag_str = "sobj"
-        if flag_str not in cls._auto_counter:
-            cls._auto_counter[flag_str] = 0
-        name = f"{flag_str}_{cls._auto_counter[flag_str]}"
-        cls._auto_counter[flag_str] += 1
-        return name
-
-    @classmethod
-    def from_file(cls, path, name=None,
-                  local_rotmat=None, local_pos=None,  # render model offset
+    def from_file(cls, path, local_rotmat=None, local_pos=None,  # render model offset
                   collision_type=None, is_free=False,
                   rgb=None, alpha=1.0):
         """only allows changing local pose of the visual model"""
-        if name is None:
-            name = os.path.splitext(os.path.basename(path))[0]
-        instance = cls(name=name,
-                       collision_type=collision_type,
+        instance = cls(collision_type=collision_type,
                        is_free=is_free)
         instance.file_path = path
         instance.add_visual(
@@ -38,9 +23,7 @@ class SceneObject:
             auto_make_collision=True)
         return instance
 
-    def __init__(self, name=None, collision_type=None, is_free=False):
-        self._name = name  # _name is for compatibility
-        self.name = self.auto_name(flag_str=name)
+    def __init__(self, collision_type=None, is_free=False):
         self.file_path = None
         self.node = ossn.SceneNode()
         self.visuals = []
@@ -56,7 +39,7 @@ class SceneObject:
     def attach_to(self, scene):
         scene.add(self)
 
-    def remove_from(self, scene):
+    def detach_from(self, scene):
         scene.remove(self)
 
     def add_visual(self, model, auto_make_collision=True):
@@ -67,13 +50,12 @@ class SceneObject:
     def add_collision(self, model):
         self.collisions.append(model)
 
-    def set_rotmat_pos(self, rotmat, pos):
+    def set_rotmat_pos(self, rotmat=None, pos=None):
         self.node.set_rotmat_pos(rotmat, pos)
 
-    def clone(self):
+    def clone(self, postfix="(clone)"):
         """DOES NOT clone the affiliated scene."""
-        new = self.__class__(name=self._name + "(clone)",
-                             collision_type=self.collision_type,
+        new = self.__class__(collision_type=self.collision_type,
                              is_free=self.is_free)
         new.toggle_render_collision = self.toggle_render_collision
         new.file_path = self.file_path
@@ -97,6 +79,14 @@ class SceneObject:
             self._mass = mass
 
     @property
+    def is_free(self):
+        return self._is_free
+
+    @is_free.setter
+    def is_free(self, flag):
+        self._is_free = flag
+
+    @property
     def quat(self):
         return self.node.quat
 
@@ -117,12 +107,12 @@ class SceneObject:
         self.node.rotmat = value
 
     @property
-    def tfmat(self):
-        return self.node.tfmat
+    def tf(self):
+        return self.node.tf
 
-    @tfmat.setter
-    def tfmat(self, value):
-        self.node.tfmat = value
+    @tf.setter
+    def tf(self, value):
+        self.node.tf = value
 
     @property
     def rgb(self):
@@ -178,10 +168,6 @@ class SceneObject:
             return None
         return self._mass
 
-    @property
-    def is_free(self):
-        return self._is_free
-
     def _auto_make_collision_from_model(self, m):
         if self.collision_type is None or self.collisions:
             return
@@ -190,13 +176,18 @@ class SceneObject:
                                            geometry=m.geometry,
                                            rotmat=m.rotmat, pos=m.pos)
         elif self.collision_type == ouc.CollisionType.SPHERE:
-            shape = osc.SphereCollisionShape.fit_from_model(m)
+            shape = osc.SphereCollisionShape.fit_from_geometry(
+                m.geometry, m.rotmat, m.pos)
         elif self.collision_type == ouc.CollisionType.CAPSULE:
-            shape = osc.CapsuleCollisionShape.fit_from_model(m)
+            shape = osc.CapsuleCollisionShape.fit_from_geometry(
+                m.geometry, m.rotmat, m.pos)
         elif self.collision_type == ouc.CollisionType.AABB:
-            shape = osc.AABBCollisionShape.fit_from_model(m)
+            shape = osc.AABBCollisionShape.fit_from_geometry(
+                m.geometry, m.rotmat, m.pos)
         elif self.collision_type == ouc.CollisionType.OBB:
-            shape = osc.OBBCollisionShape.fit_from_model(m)
+            shape = osc.OBBCollisionShape.fit_from_geometry(
+                m.geometry, m.rotmat, m.pos)
         elif self.collision_type == ouc.CollisionType.PLANE:
-            shape = osc.PlaneCollisionShape.fit_from_model(m)
+            shape = osc.PlaneCollisionShape.fit_from_geometry(
+                m.geometry, m.rotmat, m.pos)
         self.add_collision(shape)

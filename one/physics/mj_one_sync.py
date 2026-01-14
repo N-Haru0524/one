@@ -1,9 +1,11 @@
-import mujoco
-
 class MJSynchronizer:
-    def __init__(self, mj_runtime, scene):
+    def __init__(self, mj_runtime, scene,
+                 sobj2bdy, rutl2bdy, mecj2jnt):
         self.mj_runtime = mj_runtime
         self.scene = scene
+        self.sobj2bdy = sobj2bdy
+        self.rutl2bdy = rutl2bdy
+        self.mecj2jnt = mecj2jnt
         self._body_map = {}
         self._qpos_map = {}
         self._freebase_map = {}
@@ -11,27 +13,19 @@ class MJSynchronizer:
 
     def _build_maps(self):
         model = self.mj_runtime.model
-        for obj in self.scene.sobjs:
-            if not obj.collisions and not obj.is_free:
-                continue
-            bid = mujoco.mj_name2id(
-                model, mujoco.mjtObj.mjOBJ_BODY, obj.name)
+        for obj, body in self.sobj2bdy.items():
+            bid = self.mj_runtime.model.body(body.name).id
             self._body_map[obj] = bid
-        for state in self.scene.states:
-            lnk = state.runtime_lnks[0]
-            if lnk.is_free:
-                bid = mujoco.mj_name2id(
-                    model, mujoco.mjtObj.mjOBJ_BODY, lnk.name)
-                self._freebase_map[state] = bid
-            compiled = state._compiled
-            for jidx in range(compiled.n_jnts):
-                lidx = compiled.clidx_of_jidx[jidx]
-                lnk = state.runtime_lnks[lidx]
-                jname = f"j{jidx}({lnk.name})"
-                jid = mujoco.mj_name2id(
-                    model, mujoco.mjtObj.mjOBJ_JOINT, jname)
-                qadr = model.jnt_qposadr[jid]
-                self._qpos_map[(state, jidx)] = qadr
+        for mecba in self.scene.mecbas:
+            root_lnk = mecba.runtime_root_lnk
+            if root_lnk.is_free:
+                body = self.rutl2bdy[root_lnk]
+                bid = model.body(body.name).id
+                self._freebase_map[mecba] = bid
+        for (mecba, jidx), jnode in self.mecj2jnt.items():
+            jid = self.mj_runtime.model.joint(jnode.name).id
+            qadr = model.jnt_qposadr[jid]
+            self._qpos_map[(mecba, jidx)] = qadr
 
     def push_qpos(self):
         data = self.mj_runtime.data
@@ -40,26 +34,24 @@ class MJSynchronizer:
 
     def pull_qpos(self):
         data = self.mj_runtime.data
-        for state, bid in self._freebase_map.items():
+        for mecba, bid in self._freebase_map.items():
+            rotmat = data.xmat[bid].reshape(3, 3)
             pos = data.xpos[bid]
-            rot = data.xmat[bid].reshape(3,3)
-            state.base_rotmat[:] = rot
-            state.base_pos[:] = pos
-        for (state, jidx), adr in self._qpos_map.items():
-            state.qs[jidx] = data.qpos[adr]
-        for state in self.scene.states:
-            state.fk()
-            state.update()
+            mecba.set_rotmat_pos(rotmat, pos)
+        for (mecba, jidx), adr in self._qpos_map.items():
+            mecba.qs[jidx] = data.qpos[adr]
+        for mecba in self.scene.mecbas:
+            mecba.fk(update=True)
 
     def pull_body_pose(self):
         data = self.mj_runtime.data
         for obj, bid in self._body_map.items():
             pos = data.xpos[bid]
-            rot = data.xmat[bid].reshape(3,3)
+            rot = data.xmat[bid].reshape(3, 3)
             obj.set_rotmat_pos(rot, pos)
 
-    def push_by_state(self, state, qs):
+    def push_by_mecba(self, mecba, qs):
         data = self.mj_runtime.data
         for jidx, q in enumerate(qs):
-            qadr = self._qpos_map[(state, jidx)]
+            qadr = self._qpos_map[(mecba, jidx)]
             data.qpos[qadr] = q

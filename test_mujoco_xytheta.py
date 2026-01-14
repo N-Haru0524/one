@@ -21,7 +21,7 @@ base_box.attach_to(base.scene)
 xyt_bot = xyt.XYThetaRobot()
 xyt_bot.rgb = ouc.ExtendedColor.LAWN_GREEN
 xyt_bot.attach_to(base.scene)
-xyt_bot.base_pos = (0, 0, 1.11)
+xyt_bot.set_rotmat_pos(pos=(0, 0, 1.11))
 xyt_bot.toggle_render_collision = True
 
 obstacle = ossop.gen_box(half_extents=(.1, .1, .1),
@@ -36,14 +36,18 @@ for i in range(5):
     obstacle_i.pos = (xy[0], xy[1], i * 0.3 + 1.5)
     obstacle_i.attach_to(base.scene)
 
-mjenv = mj.MJEnv(scene=base.scene)
+mjenv = mj.MJEnv(scene=base.scene,
+                 require_ctrl=True)
 mjenv.save("scene.xml")
+
 
 def stop(dt, function):
     base.stop(function)
 
+
 base.schedule_interval(mjenv.step)
 base.schedule_once(stop, 2, mjenv.step)
+
 
 def control(dt, base, mjenv):
     k = base.input_manager.pressed_keys
@@ -67,6 +71,7 @@ def control(dt, base, mjenv):
     mjenv.data.ctrl[1] += dq_world[1]
     mjenv.data.ctrl[2] += dq_world[2]
     mjenv.step(dt)
+
 
 base.schedule_interval(control, .01, base, mjenv)
 base.run()

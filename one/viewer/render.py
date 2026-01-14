@@ -19,7 +19,7 @@ class Render:
 
     def draw(self, scene):
         cam_view = self.camera.view_mat.T.flatten()
-        cam_proj = self.camera.projmat.T.flatten()
+        cam_proj = self.camera.proj_mat.T.flatten()
         # rebuild cache if needed
         if scene.dirty or self._groups_cache is None:
             self._groups_cache = self._build_shader_groups(scene)
@@ -47,8 +47,8 @@ class Render:
         groups = {"mesh_solid": {},  # vao -> [(model, node), ...]
                   "mesh_transparent": {},  # vao -> [(model, node), ...]
                   "pcd": {}}  # vao -> [(model, node), ...]
-        for scn_obj in scene:
-            for model in scn_obj.visuals:
+        for sobj in scene:
+            for model in sobj.visuals:
                 shader = self._pick_shader(model)
                 device_buffer = model.geometry.get_device_buffer()
                 if shader is self.mesh_shader:
@@ -59,9 +59,9 @@ class Render:
                     target = groups["pcd"]
                 if device_buffer.vao not in target:
                     target[device_buffer.vao] = []
-                target[device_buffer.vao].append((model, scn_obj.node))
-            if scn_obj.toggle_render_collision:
-                for c in scn_obj.collisions:
+                target[device_buffer.vao].append((model, sobj.node))
+            if sobj.toggle_render_collision:
+                for c in sobj.collisions:
                     model = c.to_render_model()
                     shader = self._pick_shader(model)
                     device_buffer = model.geometry.get_device_buffer()
@@ -73,7 +73,7 @@ class Render:
                         target = groups["pcd"]
                     if device_buffer.vao not in target:
                         target[device_buffer.vao] = []
-                    target[device_buffer.vao].append((model, scn_obj.node))
+                    target[device_buffer.vao].append((model, sobj.node))
         return groups
 
     def _draw_solid_mesh_with_outline(self, solid_groups, cam_view, cam_proj):
@@ -94,7 +94,7 @@ class Render:
             tf = np.empty((len(instance_list), 4, 4), np.float32)
             rgba = np.empty((len(instance_list), 4), np.float32)
             for i, (model, node) in enumerate(instance_list):
-                tf[i] = (node.wd_tfmat @ model.tfmat).T
+                tf[i] = (node.wd_tf @ model.tf).T
                 rgba[i] = (*model.rgb, model.alpha)
             device = instance_list[0][0].geometry.get_device_buffer()
             device.update_instances(tf, rgba)
@@ -111,7 +111,7 @@ class Render:
         for instance_list in solid_groups.values():
             tf = np.empty((len(instance_list), 4, 4), np.float32)
             for i, (model, node) in enumerate(instance_list):
-                tf[i] = (node.wd_tfmat @ model.tfmat).T
+                tf[i] = (node.wd_tf @ model.tf).T
             device = instance_list[0][0].geometry.get_device_buffer()
             device.update_instances(tf)
             device.draw_instanced()
@@ -138,7 +138,7 @@ class Render:
         instances = []
         for instance_list in transparent_groups.values():
             for model, node in instance_list:
-                world = node.wd_tfmat @ model.tfmat
+                world = node.wd_tf @ model.tf
                 pos = world[:3, 3]
                 d2 = float(np.dot(pos - cam_pos, pos - cam_pos))
                 device = model.geometry.get_device_buffer()
@@ -147,7 +147,7 @@ class Render:
         for _, model, node, device in instances:
             tfmat = np.empty((1, 4, 4), np.float32)
             rgba = np.empty((1, 4), np.float32)
-            tfmat[0] = (node.wd_tfmat @ model.tfmat).T
+            tfmat[0] = (node.wd_tf @ model.tf).T
             rgba[0] = (*model.rgb, model.alpha)
             device.update_instances(tfmat, rgba)
             device.draw_instanced()
@@ -162,8 +162,7 @@ class Render:
         for instance_list in pcd_groups.values():
             for model, node in instance_list:
                 self.pcd_shader.program["u_model"] = (
-                        node.wd_tfmat @ model.local_tfmat
-                ).T.ravel()
+                        node.wd_tf @ model.local_tfmat).T.ravel()
                 model.get_device_buffer().draw()
 
     def _gl_setup(self):
