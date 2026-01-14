@@ -168,7 +168,7 @@ class MechBase:
         parent_tfmat = self.get_lnk_ref_tfmat(mounting.parent_link)
         child_tfmat = parent_tfmat @ mounting.engage_tfmat
         if isinstance(mounting.child, MechBase):
-            mounting.child.state.base_tfmat = child_tfmat
+            mounting.child.set_base_rotmat_pos(child_tfmat[:3, :3], child_tfmat[:3, 3])
             mounting.child.fk(update=True)
         else:
             mounting.child.tfmat = child_tfmat
