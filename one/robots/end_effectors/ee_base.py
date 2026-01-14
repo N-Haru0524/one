@@ -14,7 +14,7 @@ class EndEffectorBase(orbmb.MechBase):
         return new
 
     def set_tcp_rotmat_pos(self, rotmat=None, pos=None):
-        self._tcp_tf[:3, :3] = oum.ensure_tf(rotmat)
+        self._tcp_tf[:3, :3] = oum.ensure_rotmat(rotmat)
         self._tcp_tf[:3, 3] = oum.ensure_pos(pos)
 
     @property

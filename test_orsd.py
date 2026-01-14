@@ -7,6 +7,8 @@ screwdriver = orsd.ORSD()
 
 screwdriver.toggle_render_collision = True
 screwdriver.attach_to(base.scene)
+tcpframe = ossop.gen_frame(pos=screwdriver.fk()[-1][:3, 3], rotmat=screwdriver.fk()[-1][:3, :3])
+tcpframe.attach_to(base.scene)
 # base.run()
 
 box = ossop.gen_cylinder(spos=(.0, .22, 0), epos=(.0, .22, .1), radius=.03,
@@ -23,9 +25,8 @@ collider.actors = [screwdriver]
 collider.compile()
 
 flag = "extend"
-qs = screwdriver.qs[0]
 def update_finger(dt):
-    global flag, qs
+    global flag, tcpframe
     if flag == "extend":
         qs = screwdriver.qs[0] + 0.0001
         if qs >= screwdriver.shank_range[1]:
@@ -37,6 +38,9 @@ def update_finger(dt):
             qs = screwdriver.shank_range[0]
             flag = "extend"
     screwdriver.set_shank_len(qs)
+    tcpframe.detach_from(base.scene)
+    tcpframe = ossop.gen_frame(pos=screwdriver.fk()[-1][:3, 3], rotmat=screwdriver.fk()[-1][:3, :3])
+    tcpframe.attach_to(base.scene)
     print(screwdriver.qs)
     if collider.is_collided([qs]):
         box.rgba = (1, 0, 0, 0.5)

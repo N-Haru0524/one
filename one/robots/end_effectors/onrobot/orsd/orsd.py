@@ -17,6 +17,7 @@ def get_structure():
     shank_lnk = orbms.Link.from_file(
         os.path.join(mesh_dir, "shank.stl"),
         local_rotmat=oum.rotmat_from_euler(0, 0, np.pi / 2),
+        local_pos=np.array([0, -0.19971400, -0.09511483], dtype=np.float32),
         collision_type=ouc.CollisionType.AABB,
         rgb=ouc.ExtendedColor.SILVER)
     
@@ -24,8 +25,8 @@ def get_structure():
         jnt_type=ouc.JntType.PRISMATIC,
         parent_lnk=base_lnk, child_lnk=shank_lnk,
         axis=ouc.StandardAxis.Y,
-        pos=np.array([0, -0.033164, 0], dtype=np.float32),
-        lmt_low=0.0, lmt_up=0.033164)
+        pos=np.array([0, 0.19971400, 0.09511483], dtype=np.float32),
+        lmt_low=-0.033164, lmt_up=0.0)
     
     structure.add_lnk(base_lnk)
     structure.add_lnk(shank_lnk)
@@ -40,8 +41,8 @@ class ORSD(oreb.EndEffectorBase):
 
     def __init__(self):
         super().__init__(
-            tcp_tf=oum.tf_from_rotmat_pos(pos=(0, 0, 0.15)))
-        self.shank_range = np.array([0.0, 0.033164], dtype=np.float32)
+            tcp_tf=oum.tf_from_rotmat_pos(pos=(0, 0.30, 0.15)))
+        self.shank_range = np.array([-0.033164, 0.0], dtype=np.float32)
         self.set_shank_len(self.shank_range[0])
         
     def set_shank_len(self, length):
