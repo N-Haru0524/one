@@ -30,7 +30,6 @@ def update_finger(dt):
             qs = gripper.jaw_range[0] / 2
             flag = "open"
     gripper.set_jaw_width(qs * 2)
-    gripper.update()
     print(gripper.qs)
 
 base.schedule_interval(update_finger, interval=.01)

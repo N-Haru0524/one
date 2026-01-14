@@ -57,3 +57,12 @@ class GripperMixin:
     def _require_attr(self, name):
         if not hasattr(self, name):
             raise AttributeError(f"{type(self).__name__} must define {name}")
+
+class ScrewdriverMixin:
+
+    def set_shank_len(self, length):
+        raise NotImplementedError
+
+    def _require_attr(self, name):
+        if not hasattr(self, name):
+            raise AttributeError(f"{type(self).__name__} must define {name}")
