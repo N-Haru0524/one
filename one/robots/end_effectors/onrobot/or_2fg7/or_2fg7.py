@@ -18,12 +18,12 @@ def get_structure():
     lft_fgr_lnk = orbms.Link.from_file(
         os.path.join(mesh_dir, "inward_left_finger_link.stl"),
         local_rotmat=oum.rotmat_from_euler(0, 0, np.pi / 2),
-        collision_type=ouc.CollisionType.AABB,
+        collision_type=ouc.CollisionType.MESH,
         rgb=ouc.ExtendedColor.STEEL_BLUE)
     rgt_fgr_lnk = orbms.Link.from_file(
         os.path.join(mesh_dir, "inward_right_finger_link.stl"),
         local_rotmat=oum.rotmat_from_euler(0, 0, np.pi / 2),
-        collision_type=ouc.CollisionType.AABB,
+        collision_type=ouc.CollisionType.MESH,
         rgb=ouc.ExtendedColor.SALMON_PINK)
     # 1 joint
     jnt_bl_lf = orbms.Joint(

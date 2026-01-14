@@ -16,7 +16,7 @@ class MJOneConverter:
         self._opt.timestep = 0.002
         self._default = opmno.DefaultNode()
         # self._default.geom["friction"] = (1.0, 0.1, 0.1)
-        self._default.geom["margin"] = 0.007
+        self._default.geom["margin"] = 0.000
         self._default.geom["solref"] = (0.02, 1.0)
         self._default.geom["solimp"] = (0.9, 0.95, 0.002)
         self._mesh_assets = {}  # key = file_path, value = MeshAsset
