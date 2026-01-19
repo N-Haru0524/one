@@ -15,7 +15,7 @@ class SpaceProvider:
     def __init__(self, state_space, collider=None, max_edge_step=None):
         """is_state_valid: callback function: (state: np.ndarray) -> bool"""
         self.ssp = state_space
-        self.collider:ocm.MjCollider = collider
+        self.collider:ocm.MJCollider = collider
         if max_edge_step is not None and max_edge_step <= 0.0:
             raise ValueError("max_edge_step must be positive.")
         self.max_edge_step = max_edge_step

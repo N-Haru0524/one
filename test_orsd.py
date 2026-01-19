@@ -18,7 +18,7 @@ box.attach_to(base.scene)
 box.toggle_render_collision = True
 # gripper.grasp(box)
 
-collider = ocm.MjCollider()
+collider = ocm.MJCollider()
 collider.append(screwdriver)
 collider.append(box)
 collider.actors = [screwdriver]

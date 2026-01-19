@@ -35,7 +35,7 @@ box5.attach_to(base.scene)
 plane_ground = ossop.gen_plane()
 plane_ground.attach_to(base.scene)
 
-collider = ocm.MjCollider()
+collider = ocm.MJCollider()
 collider.append(robot)
 collider.append(box)
 collider.append(box2)
@@ -43,7 +43,7 @@ collider.append(box3)
 collider.append(box4)
 collider.append(box5)
 collider.append(plane_ground)
-collider.actors.append(robot)
+collider.actors = [robot]
 collider.compile()
 
 jlmt_low = robot.structure.compiled.jlmt_low_by_idx

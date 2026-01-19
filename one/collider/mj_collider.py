@@ -19,13 +19,13 @@ class MJCollider:
 
     def is_collided(self, qs):
         if not self.actors:
-            raise RuntimeError("MjCollider.actor is not set!")
+            raise RuntimeError("MJCollider.actor is not set!")
         if self._mjenv is None:
-            raise RuntimeError("MjCollider must be compiled!")
+            raise RuntimeError("MJCollider must be compiled!")
         for actor, sl in self._actor_qs_slice.items():
             if actor not in self.scene.mecbas:
                 raise RuntimeError(
-                    "All MjCollider.actors must be"
+                    "All MJCollider.actors must be"
                     " added to the scene!")
             # free base sync (the func has no-op if not free)
             self._mjenv.sync.push_by_mecba_pose(
@@ -44,7 +44,7 @@ class MJCollider:
     @actors.setter
     def actors(self, actors):
         if not actors:
-            raise ValueError("MjCollider.actors cannot be empty!")
+            raise ValueError("MJCollider.actors cannot be empty!")
         self._actors = tuple(actors)
         self._rebuild_mapping()
 
@@ -54,7 +54,7 @@ class MJCollider:
         for actor in self._actors:
             if actor not in self.scene.mecbas:
                 raise RuntimeError(
-                    "All MjCollider.actors must be added to the scene!")
+                    "All MJCollider.actors must be added to the scene!")
             ndof = actor.ndof
             self._actor_qs_slice[actor] = slice(offset, offset + ndof)
             offset += ndof
