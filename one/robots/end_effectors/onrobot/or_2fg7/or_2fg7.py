@@ -13,7 +13,7 @@ def get_structure():
     base_lnk = orbms.Link.from_file(
         os.path.join(mesh_dir, "base_link.stl"),
         local_rotmat=oum.rotmat_from_euler(0, 0, np.pi / 2),
-        collision_type=ouc.CollisionType.AABB,
+        collision_type=ouc.CollisionType.MESH,
         rgb=ouc.ExtendedColor.SILVER)
     lft_fgr_lnk = orbms.Link.from_file(
         os.path.join(mesh_dir, "inward_left_finger_link.stl"),
@@ -61,9 +61,15 @@ class OR2FG7(oreb.EndEffectorBase, oreb.GripperMixin):
         super().__init__(
             tcp_tf=oum.tf_from_rotmat_pos(pos=(0, 0, 0.15)))
         self.jaw_range = np.array([0.005, 0.038], dtype=np.float32)  # min, max
-        self.set_jaw_width(self.jaw_range[1])
+        self.set_jaw_width(0.005)
 
     def set_jaw_width(self, jaw_width):
         if jaw_width < self.jaw_range[0] or jaw_width > self.jaw_range[1]:
             raise ValueError(f"jaw_width {jaw_width} out of range {self.jaw_range}")
         self.fk(qs=[jaw_width * 0.5, jaw_width * 0.5])
+
+    def clone(self):
+        new = super().clone()
+        new.jaw_range = self.jaw_range.copy()
+        new.set_jaw_width(self.qs[0]*2)
+        return new

@@ -7,7 +7,6 @@ builtins.base = base
 oframe = ossop.gen_frame()
 oframe.attach_to(base.scene)
 robot = khi_rs007l.RS007L()
-robot.is_free=True
 robot.rotmat = oum.rotmat_from_euler(0, 0, -oum.pi / 2)
 robot.attach_to(base.scene)
 
@@ -21,7 +20,7 @@ box3 = ossop.gen_box(half_extents=(.01, 1, .15), pos=(.3, 0.0, 1),
                     collision_type=ouc.CollisionType.AABB)
 box3.attach_to(base.scene)
 
-collider = ocm.MjCollider()
+collider = ocm.MJCollider()
 collider.append(robot)
 collider.append(box)
 collider.append(box2)

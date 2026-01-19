@@ -25,7 +25,7 @@ class ManipulatorBase(orbmb.MechBase):
             self._update_mounting(self._mountings[ee])
         if auto_tcp:
             flange_tfmat = self._mountings[ee].engage_tf
-            self._tcp_tf[:] = flange_tfmat @ ee.tcp_tfmat
+            self._tcp_tf[:] = flange_tfmat @ ee.tcp_tf
 
     def set_tcp_rotmat_pos(self, rotmat=None, pos=None):
         self._tcp_tf[:3, :3] = oum.ensure_tf(rotmat)
@@ -64,5 +64,4 @@ class ManipulatorBase(orbmb.MechBase):
 
     @property
     def wd_tcp_tf(self):
-        flange_lnk = self.runtime_lnks[-1]
-        return self.get_wd_lnk_tf(flange_lnk) @ self._tcp_tf
+        return self.runtime_lnks[-1].tf @ self._tcp_tf

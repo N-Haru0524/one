@@ -19,6 +19,7 @@ base_box.rgb = ouc.ExtendedColor.IVORY
 base_box.toggle_render_collision = True
 base_box.attach_to(base.scene)
 xyt_bot = xyt.XYThetaRobot()
+xyt_bot.is_free=False
 xyt_bot.rgb = ouc.ExtendedColor.LAWN_GREEN
 xyt_bot.attach_to(base.scene)
 xyt_bot.set_rotmat_pos(pos=(0, 0, 1.11))
@@ -40,13 +41,8 @@ mjenv = mj.MJEnv(scene=base.scene,
                  require_ctrl=True)
 mjenv.save("scene.xml")
 
-
-def stop(dt, function):
-    base.stop(function)
-
-
 base.schedule_interval(mjenv.step)
-base.schedule_once(stop, 2, mjenv.step)
+base.stop_after(mjenv.step, 2)
 
 
 def control(dt, base, mjenv):

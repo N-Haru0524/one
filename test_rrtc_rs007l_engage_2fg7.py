@@ -8,7 +8,6 @@ builtins.base = base
 oframe = ossop.gen_frame()
 oframe.attach_to(base.scene)
 robot = khi_rs007l.RS007L()
-robot.is_free = True
 robot.set_rotmat_pos(pos=(0, 0, 0.01))
 gripper = or_2fg7.OR2FG7()
 # gripper.open()
@@ -34,7 +33,7 @@ box5.attach_to(base.scene)
 plane_ground = ossop.gen_plane()
 plane_ground.attach_to(base.scene)
 
-collider = ocm.MjCollider()
+collider = ocm.MJCollider()
 collider.append(robot)
 collider.append(box)
 collider.append(box2)
