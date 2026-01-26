@@ -15,7 +15,7 @@ target_box.attach_to(base.scene)
 robot.engage(gripper)
 
 def catch_target(dt):
-    tgt_homo = robot.fk(robot.qs, update=False)[-1]
+    tgt_homo = robot.fk(robot.qs)[-1]
     tgt_pos = tgt_homo[:3, 3]
     tgt_rotmat = tgt_homo[:3, :3]
     print("TCP homo:", tgt_homo)

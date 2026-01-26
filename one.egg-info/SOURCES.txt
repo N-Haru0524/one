@@ -1,0 +1,11 @@
+LICENSE
+README.md
+pyproject.toml
+one/__init__.py
+one.egg-info/PKG-INFO
+one.egg-info/SOURCES.txt
+one.egg-info/dependency_links.txt
+one.egg-info/requires.txt
+one.egg-info/top_level.txt
+one_assembly/__init__.py
+one_assembly/work.py
