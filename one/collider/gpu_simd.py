@@ -24,6 +24,8 @@ class GPUCollider:
         :param max_points: max collision points to return (default 200)
         :return: (N,3) collision points or None
         """
+        tf_a = tf_a @ col_a.tf
+        tf_b = tf_b @ col_b.tf
         geom_a = col_a.geometry
         geom_b = col_b.geometry
         device_a = geom_a.get_device_buffer()
@@ -218,6 +220,7 @@ def detect_collision(col_a, tf_a, col_b, tf_b,
                      eps=1e-9, max_points=1000):
     """
     detect collision between two collision shapes using GPU
+    NOTE: broad aabb check should be done prior to calling this function for efficiency
     :param col_a, col_b: CollisionShape instances
     :param tf_a, tf_b: (4,4) world transform matrices
     :param eps: numerical tolerance (default 1e-9)

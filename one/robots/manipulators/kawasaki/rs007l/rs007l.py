@@ -104,6 +104,12 @@ def prepare_mechstruct():
     structure.add_jnt(jnt_l3_l4)
     structure.add_jnt(jnt_l4_l5)
     structure.add_jnt(jnt_l5_l6)
+    # ignore collisions pairs
+    structure.ignore_collision(base_lnk, lnk2)
+    structure.ignore_collision(lnk1, lnk3)
+    structure.ignore_collision(lnk2, lnk4)
+    structure.ignore_collision(lnk3, lnk5)
+    structure.ignore_collision(lnk4, lnk6)
     # order joints for quick access
     structure.compile()
     return structure

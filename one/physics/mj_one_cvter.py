@@ -1,7 +1,7 @@
 import numpy as np
 import one.utils.math as oum
 import one.utils.constant as ouc
-import one.scene.collision as sco
+import one.scene.collision_shape as sco
 import one.robots.base.mech_base as orbmb
 import one.physics.inertial as opi
 import one.physics.mj_nodes as opmno
@@ -66,9 +66,7 @@ class MJOneConverter:
         # process collision ignores
         for mecba in scene.mecbas:
             struct = mecba.structure
-            for a, b in struct.collision_ignores:
-                alidx = struct.compiled.lidx_map[a]
-                blidx = struct.compiled.lidx_map[b]
+            for alidx, blidx in struct.compiled.collision_ignores_idx:
                 rta = mecba.runtime_lnks[alidx]
                 rtb = mecba.runtime_lnks[blidx]
                 body_a = self._rutl2bdy[rta]

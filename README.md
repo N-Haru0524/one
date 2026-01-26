@@ -13,6 +13,11 @@ The internal data structures are designed to be compatible with both URDF and MJ
 
 Overall, `one` is intended as a lightweight yet expressive research framework for studying motion planning, learning, and their interaction under a single, coherent simulation backend.
 
+
+<table style="width:100%; border:none; border-collapse:collapse;">
+<tr style="border:none;">
+<td style="width:60%; border:none; padding:0; vertical-align:top;">
+
 ## Table of Contents
 
 - [Features](#features)
@@ -28,6 +33,13 @@ Overall, `one` is intended as a lightweight yet expressive research framework fo
 - [Contributing](#contributing)
 - [License](#license)
 - [Acknowledgments](#acknowledgments)
+
+</td>
+<td style="width:40%; border:none; padding:0; text-align:center; vertical-align:middle;">
+<img src="collision.gif" width="320">
+</td>
+</tr>
+</table>
 
 ## Features
 
@@ -187,9 +199,6 @@ if hit_points is not None:
 base.run()
 ```
 
-![Collision Detection Demo](docs/images/collision_demo.gif)
-*CPU SIMD collision detection visualizing contact points between two meshes*
-
 #### GPU Collision Support
 
 The framework provides GPU-accelerated collision detection using OpenGL compute shaders (OpenGL 4.3+). The GPU implementation achieves **~10× speedup** over CPU SIMD by:
@@ -229,7 +238,7 @@ import numpy as np
 from one import oum, ovw, ouc, ossop, ocm, ompsp, ompr, khi_rs007l
 
 # Setup world and robot
-base = ovw.World(cam_pos=(-2, 2, 2), cam_lookat_pos=(0, 0, 0.5), 
+base = ovw.World(cam_pos=(-2, 2, 2), cam_lookat_pos=(0, 0, 0.5),
                  toggle_auto_cam_orbit=False)
 builtins.base = base
 
@@ -270,12 +279,12 @@ sspp = ompsp.SpaceProvider.from_box_bounds(
     lmt_low=jlmt_low,
     lmt_high=jlmt_high,
     collider=collider,
-    max_edge_step=np.pi/180)
+    cd_step_size=np.pi / 180)
 
 # Plan path with RRT-Connect
-planner = ompr.RRTConnectPlanner(ssp_provider=sspp, step_size=np.pi / 36)
+planner = ompr.RRTConnectPlanner(ssp_provider=sspp, extend_step_size=np.pi / 36)
 start = np.array([0, 0, 0, 0, 0, 0])
-goal = np.array([-oum.pi / 2, -oum.pi / 4, oum.pi / 2, 
+goal = np.array([-oum.pi / 2, -oum.pi / 4, oum.pi / 2,
                  -oum.pi / 2, oum.pi / 4, oum.pi / 3])
 state_list = planner.solve(start=start, goal=goal, verbose=True)
 print(f"Path found with {len(state_list)} waypoints")
@@ -294,12 +303,14 @@ robot2.attach_to(base.scene)
 # Animate the planned path
 counter = [0]
 
+
 def update_pose(dt, counter):
     if counter[0] < len(state_list):
         robot.fk(qs=state_list[counter[0]])
         counter[0] += 1
     else:
         counter[0] = 0
+
 
 base.schedule_interval(update_pose, interval=0.1, counter=counter)
 base.run()
