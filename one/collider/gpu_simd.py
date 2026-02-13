@@ -26,8 +26,8 @@ class GPUCollider:
         """
         tf_a = tf_a @ col_a.tf
         tf_b = tf_b @ col_b.tf
-        geom_a = col_a.geometry
-        geom_b = col_b.geometry
+        geom_a = col_a.geom
+        geom_b = col_b.geom
         device_a = geom_a.get_device_buffer()
         device_b = geom_b.get_device_buffer()
         if device_a is None or device_b is None:
@@ -97,7 +97,7 @@ class GPUCollider:
         if self._initialized:
             return
         shader_dir = os.path.join(os.path.dirname(__file__), 'shaders')
-        unified_src = self._load_shader_file(os.path.join(shader_dir, 'twophase.comp'))
+        unified_src = self._load_shader_file(os.path.join(shader_dir, 'twophase_vbo.comp'))
         try:
             self._program = self._compile_shader_manual(unified_src, 'unified')
         except Exception as e:

@@ -14,7 +14,7 @@ The project is a lightweight MuJoCo-based robotics research toolkit.
 
 ### Install
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ### Run a Single Test
@@ -56,6 +56,7 @@ one/
 - Avoid wildcard imports; import specific modules.
 
 Canonical aliases:
+
 ```python
 import one.utils.math as oum
 import one.utils.helper as ouh

@@ -1,16 +1,15 @@
-import os
 import one.utils.constant as ouc
+import one.geom.loader as ogl
 import one.scene.render_model as osrm
 import one.scene.scene_node as ossn
-import one.scene.geometry_loader as osgl
 import one.scene.collision_shape as osc
 
 
 class SceneObject:
 
     @classmethod
-    def from_file(cls, path,
-                  local_rotmat=None, local_pos=None,  # render model offset
+    def from_file(cls, path, scale=None,  # scale applied during loading
+                  loc_rotmat=None, loc_pos=None,  # render model offset
                   collision_type=None, is_free=False,
                   rgb=None, alpha=1.0):
         """only allows changing local pose of the visual model"""
@@ -18,8 +17,8 @@ class SceneObject:
                        is_free=is_free)
         instance.file_path = path
         instance.add_visual(
-            osrm.RenderModel(geometry=osgl.load_geometry(path),
-                             rotmat=local_rotmat, pos=local_pos,
+            osrm.RenderModel(geom=ogl.load_geometry(path, scale=scale),
+                             rotmat=loc_rotmat, pos=loc_pos,
                              rgb=rgb, alpha=alpha),
             auto_make_collision=True)
         return instance
@@ -195,23 +194,23 @@ class SceneObject:
         #     return
         if self._collision_type == ouc.CollisionType.MESH:
             shape = osc.MeshCollisionShape(file_path=self.file_path,
-                                           geometry=m.geometry,
+                                           geom=m.geom,
                                            rotmat=m.rotmat, pos=m.pos)
         elif self._collision_type == ouc.CollisionType.SPHERE:
-            shape = osc.SphereCollisionShape.fit_from_geometry(
-                m.geometry, m.rotmat, m.pos)
+            shape = osc.SphereCollisionShape.fit_from_geom(
+                m.geom, m.rotmat, m.pos)
         elif self._collision_type == ouc.CollisionType.CAPSULE:
-            shape = osc.CapsuleCollisionShape.fit_from_geometry(
-                m.geometry, m.rotmat, m.pos)
+            shape = osc.CapsuleCollisionShape.fit_from_geom(
+                m.geom, m.rotmat, m.pos)
         elif self._collision_type == ouc.CollisionType.AABB:
-            shape = osc.AABBCollisionShape.fit_from_geometry(
-                m.geometry, m.rotmat, m.pos)
+            shape = osc.AABBCollisionShape.fit_from_geom(
+                m.geom, m.rotmat, m.pos)
         elif self._collision_type == ouc.CollisionType.OBB:
-            shape = osc.OBBCollisionShape.fit_from_geometry(
-                m.geometry, m.rotmat, m.pos)
+            shape = osc.OBBCollisionShape.fit_from_geom(
+                m.geom, m.rotmat, m.pos)
         elif self._collision_type == ouc.CollisionType.PLANE:
-            shape = osc.PlaneCollisionShape.fit_from_geometry(
-                m.geometry, m.rotmat, m.pos)
+            shape = osc.PlaneCollisionShape.fit_from_geom(
+                m.geom, m.rotmat, m.pos)
         self.add_collision(shape)
 
     def _update_collision_group(self):

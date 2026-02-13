@@ -103,8 +103,9 @@ It is recommended to use a virtual environment (e.g., `venv`, `conda`, or simila
 
 3. **Install dependencies:**
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
    ```
+   This installs the current repository as an editable site package in your environment, so changes in this folder are immediately reflected without reinstalling.
 
 ### Dependencies Explained
 
@@ -126,7 +127,7 @@ base = ovw.World(cam_pos=(.5, .5, .5), cam_lookat_pos=(0, 0, .2),
                  toggle_auto_cam_orbit=True)
 
 # Add coordinate frame
-oframe = ossop.gen_frame().attach_to(base.scene)
+oframe = ossop.frame().attach_to(base.scene)
 
 # Load and display a gripper
 gripper = or_2fg7.OR2FG7()
@@ -134,9 +135,9 @@ gripper.attach_to(base.scene)
 gripper.fk()
 
 # Create a cylinder object
-box = ossop.gen_cylinder(spos=(.3, 0, 0), epos=(.3, 0, .1), radius=.03,
-                         collision_type=ouc.CollisionType.AABB,
-                         is_free=True)
+box = ossop.cylinder(spos=(.3, 0, 0), epos=(.3, 0, .1), radius=.03,
+                     collision_type=ouc.CollisionType.AABB,
+                     is_free=True)
 box.attach_to(base.scene)
 
 # Compute grasp
@@ -190,7 +191,7 @@ bunny2.attach_to(base.scene)
 # Visualize collision points as red spheres
 if hit_points is not None:
     for hit_point in hit_points:
-        s = ossop.gen_sphere(
+        s = ossop.sphere(
             pos=hit_point, radius=0.002,
             rgb=ouc.BasicColor.RED, alpha=ouc.ALPHA.SOLID,
             collision_type=None, is_free=False)
@@ -214,14 +215,16 @@ The framework provides GPU-accelerated collision detection using OpenGL compute 
 **Automatic fallback**: If OpenGL compute shaders are unavailable (e.g., older hardware, missing drivers), the system automatically falls back to CPU SIMD without code changes.
 
 **Usage:**
+
 ```python
-from one.collider import collider
+from one.collider import tbd_collider
 
 # High-level API (GPU-first with automatic CPU fallback)
 hit_points = collider.is_collided(obj1, obj2, max_points=200)
 
 # Or use specific backend explicitly
-from one.collider import gpu_simd, cpu_simd
+from one.collider import gpu_simd_batch, cpu_simd
+
 hit_points = gpu_simd.is_sobj_collided(obj1, obj2)  # GPU only
 hit_points = cpu_simd.is_sobj_collided(obj1, obj2)  # CPU only
 ```
@@ -242,7 +245,7 @@ base = ovw.World(cam_pos=(-2, 2, 2), cam_lookat_pos=(0, 0, 0.5),
                  toggle_auto_cam_orbit=False)
 builtins.base = base
 
-oframe = ossop.gen_frame()
+oframe = ossop.frame()
 oframe.attach_to(base.scene)
 
 robot = khi_rs007l.RS007L()
@@ -251,16 +254,16 @@ robot.rotmat = oum.rotmat_from_euler(0, 0, -oum.pi / 2)
 robot.attach_to(base.scene)
 
 # Add obstacles
-box = ossop.gen_box(half_extents=(1, .01, .15), pos=(.0, -0.3, 1),
-                    collision_type=ouc.CollisionType.AABB)
+box = ossop.box(half_extents=(1, .01, .15), pos=(.0, -0.3, 1),
+                collision_type=ouc.CollisionType.AABB)
 box.attach_to(base.scene)
 
-box2 = ossop.gen_box(half_extents=(.15, .01, 1), pos=(-.5, -0.3, 0.5),
-                     collision_type=ouc.CollisionType.AABB)
+box2 = ossop.box(half_extents=(.15, .01, 1), pos=(-.5, -0.3, 0.5),
+                 collision_type=ouc.CollisionType.AABB)
 box2.attach_to(base.scene)
 
-box3 = ossop.gen_box(half_extents=(.01, 1, .15), pos=(.3, 0.0, 1),
-                     collision_type=ouc.CollisionType.AABB)
+box3 = ossop.box(half_extents=(.01, 1, .15), pos=(.3, 0.0, 1),
+                 collision_type=ouc.CollisionType.AABB)
 box3.attach_to(base.scene)
 
 # Setup collision checker
@@ -282,7 +285,7 @@ sspp = ompsp.SpaceProvider.from_box_bounds(
     cd_step_size=np.pi / 180)
 
 # Plan path with RRT-Connect
-planner = ompr.RRTConnectPlanner(ssp_provider=sspp, extend_step_size=np.pi / 36)
+planner = ompr.RRTConnectPlanner(pln_ctx=sspp, extend_step_size=np.pi / 36)
 start = np.array([0, 0, 0, 0, 0, 0])
 goal = np.array([-oum.pi / 2, -oum.pi / 4, oum.pi / 2,
                  -oum.pi / 2, oum.pi / 4, oum.pi / 3])

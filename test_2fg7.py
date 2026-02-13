@@ -1,8 +1,9 @@
 import numpy as np
 from one import ovw, ouc, ossop, or_2fg7, ocm
 
-base = ovw.World(cam_pos=(.5, .5, .5), cam_lookat_pos=(0, 0, .2))
-oframe = ossop.gen_frame().attach_to(base.scene)
+base = ovw.World(cam_pos=(.5, .5, .5), cam_lookat_pos=(0, 0, .2),
+                toggle_auto_cam_orbit=True)
+oframe = ossop.frame().attach_to(base.scene)
 gripper = or_2fg7.OR2FG7()
 #
 gripper.toggle_render_collision = True
@@ -11,6 +12,9 @@ tcpframe = ossop.gen_frame(pos=gripper.fk()[-1][:3, 3], rotmat=gripper.fk()[-1][
 tcpframe.attach_to(base.scene)
 # base.run()
 
+box = ossop.cylinder(spos=(.3, 0, 0), epos=(.3, 0, .1), radius=.03,
+                     collision_type=ouc.CollisionType.AABB,
+                     is_free=True)
 box = ossop.gen_cylinder(spos=(.0, .045, 0.15), epos=(.0, .045, 0.25), radius=.03,
                          collision_type=ouc.CollisionType.AABB,
                          is_free=True)

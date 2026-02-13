@@ -1,24 +1,24 @@
 import builtins, time
 import numpy as np
-from one import oum, ovw, ouc, ossop, ocm, ompsp, ompr, khi_rs007l
+from one import oum, ovw, ouc, ossop, ocm, omppc, ompr, khi_rs007l
 
 base = ovw.World(cam_pos=(-2, 2, 2), cam_lookat_pos=(0, 0, 0.5), toggle_auto_cam_orbit=False)
 builtins.base = base
-oframe = ossop.gen_frame()
+oframe = ossop.frame()
 oframe.attach_to(base.scene)
 robot = khi_rs007l.RS007L()
 robot.is_free=True
 robot.rotmat = oum.rotmat_from_euler(0, 0, -oum.pi / 2)
 robot.attach_to(base.scene)
 
-box = ossop.gen_box(half_extents=(1, .01, .15), pos=(.0, -0.3, 1),
-                    collision_type=ouc.CollisionType.AABB)
+box = ossop.box(half_extents=(1, .01, .15), pos=(.0, -0.3, 1),
+                collision_type=ouc.CollisionType.AABB)
 box.attach_to(base.scene)
-box2 = ossop.gen_box(half_extents=(.15, .01, 1), pos=(-.5, -0.3, 0.5),
-                    collision_type=ouc.CollisionType.AABB)
+box2 = ossop.box(half_extents=(.15, .01, 1), pos=(-.5, -0.3, 0.5),
+                 collision_type=ouc.CollisionType.AABB)
 box2.attach_to(base.scene)
-box3 = ossop.gen_box(half_extents=(.01, 1, .15), pos=(.3, 0.0, 1),
-                    collision_type=ouc.CollisionType.AABB)
+box3 = ossop.box(half_extents=(.01, 1, .15), pos=(.3, 0.0, 1),
+                 collision_type=ouc.CollisionType.AABB)
 box3.attach_to(base.scene)
 
 collider = ocm.MJCollider()
@@ -29,13 +29,8 @@ collider.append(box3)
 collider.actors = [robot]
 collider.compile()
 
-jlmt_low = robot.structure.compiled.jlmt_low_by_idx
-jlmt_high = robot.structure.compiled.jlmt_high_by_idx
-sspp = ompsp.SpaceProvider.from_box_bounds(lmt_low=jlmt_low,
-                                           lmt_high=jlmt_high,
-                                           collider=collider,
-                                           cd_step_size=np.pi / 180)
-planner = ompr.RRTConnectPlanner(ssp_provider=sspp, extend_step_size=np.pi / 36)
+pln_ctx = omppc.PlanningContext(collider=collider, cd_step_size=np.pi / 180)
+planner = ompr.RRTConnectPlanner(pln_ctx=pln_ctx, extend_step_size=np.pi / 36)
 start = np.array([0, 0, 0, 0, 0, 0])
 goal = np.array([-oum.pi / 2, -oum.pi / 4, oum.pi / 2, -oum.pi / 2, oum.pi / 4, oum.pi / 3])
 

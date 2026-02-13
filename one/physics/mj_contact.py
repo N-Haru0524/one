@@ -26,11 +26,11 @@ class MJContactViz:
 
     def _init_spheres(self, radius):
         for _ in range(self.max_contacts):
-            s = ossop.gen_sphere(radius=radius,
-                                 rgb=(1, 0, 0),
-                                 alpha=ouc.ALPHA.SEMI,
-                                 collision_type=None,
-                                 is_fixed=True)
+            s = ossop.sphere(radius=radius,
+                             rgb=(1, 0, 0),
+                             alpha=ouc.ALPHA.SEMI,
+                             collision_type=None,
+                             is_fixed=True)
             s.attach_to(self.scene)
             self._spheres.append(s)
 
@@ -63,13 +63,13 @@ class MjContactForceViz:
 
     def _init_arrows(self):
         for _ in range(self.max_contacts):
-            a = ossop.gen_arrow(
+            a = ossop.arrow(
                 spos=np.zeros(3),
                 epos=np.array([0.0, 0.0, self.base_length]),
                 shaft_radius=ouc.ForceArrowSize.SHAFT_RADIUS,
                 head_radius=ouc.ForceArrowSize.HEAD_RADIUS,
                 head_length=ouc.ForceArrowSize.HEAD_LENGTH,
-                segments=8, rgb=(1, 0, 0),
+                n_segs=8, rgb=(1, 0, 0),
                 alpha=ouc.ALPHA.SEMI,
                 collision_type=None,
                 is_fixed=True)

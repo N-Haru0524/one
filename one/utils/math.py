@@ -65,6 +65,7 @@ def rotmat_from_normal(normal, up=(0, 0, 1)):
 
 def rotmat_from_normalandpoints(facet_normal, facet_first_pnt, facet_second_pnt):
     '''
+    TODO: deprecate this function
     Compute the rotation matrix of a 3D facet using
     facet_normal and the first two points on the facet
     The function uses the concepts defined by Trimesh
@@ -560,18 +561,36 @@ def skew(vec):
 
 
 def orth_vec(vec, toggle_unit=True):
-    """compute an orthogonal vector of the given vector
-    using [a,b,c] -> [b-c, -a+c, a-b]    """
-    a = vec[0]
-    b = vec[1]
-    c = vec[2]
+    """compute a vector orthogonal to the given 3D vector"""
+    vec = np.asarray(vec, dtype=np.float32).reshape(-1)
+    if vec.size != 3:
+        raise ValueError(f"Expected 3D vector, got shape {vec.shape}")
+    if np.linalg.norm(vec) <= eps:
+        out = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        return out
+    # choose the basis axis least aligned with vec for numeric stability
+    ref = np.zeros(3, dtype=np.float32)
+    ref[int(np.argmin(np.abs(vec)))] = 1.0
+    out = np.cross(vec, ref).astype(np.float32)
     if toggle_unit:
-        return unit_vec(
-            np.array([b - c, -a + c, a - b]),
-            return_length=False)
+        return unit_vec(out, return_length=False)
     else:
-        return np.array(
-            [b - c, -a + c, a - b])
+        return out
+
+def frame_from_normal(n):
+    """compute a coordinate frame from a normal vector n
+    :param n: 1x3 nparray
+    :return: 3x3 rotmat"""
+    n = n / (np.linalg.norm(n) + eps)
+    # pick a helper axis not parallel to n
+    ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    if abs(np.dot(n, ref)) > 0.9:
+        ref = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    u = np.cross(n, ref)
+    u = u / (np.linalg.norm(u) + 1e-12)
+    v = np.cross(n, u)
+    v = v / (np.linalg.norm(v) + 1e-12)
+    return np.column_stack((u, v, n)).astype(np.float32)
 
 
 def closest_point_between_lines(p1, d1, p2, d2):
@@ -1310,6 +1329,7 @@ def rotmat_from_look_at(pos, look_at, up):
 
 def area_weighted_pca(verts, faces, eps=eps):
     """area weighted pca for a mesh defined by verts and faces"""
+    """the returned eig_vecs are right-handed and in ascending order"""
     v0 = verts[faces[:, 0]]
     v1 = verts[faces[:, 1]]
     v2 = verts[faces[:, 2]]
@@ -1323,7 +1343,7 @@ def area_weighted_pca(verts, faces, eps=eps):
     diff = centroids - mean  # (M,3)
     cov = (areas[:, None, None] * (diff[:, :, None] * diff[:, None, :])).sum(axis=0)
     cov = cov / total_area
-    eig_vals, eig_vecs = np.linalg.eigh(cov)
+    eig_vals, eig_vecs = np.linalg.eigh(cov) # ascending order
     eig_vecs = ensure_right_handed(eig_vecs)
     return mean, eig_vecs.astype(np.float32)
 

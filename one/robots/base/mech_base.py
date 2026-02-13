@@ -1,8 +1,8 @@
+import os
 import numpy as np
 import one.utils.math as oum
-import one.utils.constant as ouc
-import one.utils.decorator as oud
 import one.robots.base.mech_structure as orbms
+import one.robots.base.kine.numik_sel as orbkis
 
 
 class Mounting:
@@ -16,7 +16,7 @@ class MechBase:
     _structure: orbms.MechStruct = None
 
     @classmethod
-    def _build_structure(cls):
+    def _build_structure(cls, *args, **kwargs):
         raise NotImplementedError
 
     @property
@@ -36,17 +36,19 @@ class MechBase:
                 self._compiled.n_jnts, dtype=np.float32)
         else:
             self.qs = np.asarray(home_qs, dtype=np.float32)
-        # runtime geometry
+        # runtime geom
         self.runtime_lnks = [
             lnk.clone() for lnk in self.structure.lnks]
         self.runtime_lidx_map = {
             lnk: i for i, lnk in enumerate(self.runtime_lnks)}
         # FK cache
-        self.wd_lnk_tfarr = np.tile(
+        self.gl_lnk_tfarr = np.tile(
             np.eye(4, dtype=np.float32),
             (self._compiled.n_lnks, 1, 1))
         # mountings
         self._mountings = {}
+        # solvers
+        self._solvers = {}
         # home
         self._home_qs = self.qs.copy()
         # free root lnk
@@ -77,8 +79,8 @@ class MechBase:
                 raise ValueError(f"Expected {len(self.qs)} qs, got {qs}")
         q_resolved = self._compiled.resolve_all_qs(self.qs)  # TODO: should this be active only?
         rlidx = self._compiled.root_lnk_idx
-        self.wd_lnk_tfarr[rlidx][:3, :3] = self._rotmat
-        self.wd_lnk_tfarr[rlidx][:3, 3] = self._pos
+        self.gl_lnk_tfarr[rlidx][:3, :3] = self._rotmat
+        self.gl_lnk_tfarr[rlidx][:3, 3] = self._pos
         # traversal
         for lidx in self._compiled.lnk_ids_traversal_order:
             if lidx == rlidx:
@@ -86,12 +88,12 @@ class MechBase:
             plidx = self._compiled.plidx_of_lidx[lidx]
             pjidx = self._compiled.pjidx_of_lidx[lidx]
             jnt = self.structure.jnts[pjidx]
-            plnk_tfmat = self.wd_lnk_tfarr[plidx]
-            loc_tfmat = (self._compiled.jotfmat_by_idx[pjidx] @
-                         jnt.motion_tfmat(q_resolved[pjidx]))
-            self.wd_lnk_tfarr[lidx] = plnk_tfmat @ loc_tfmat
+            plnk_tfmat = self.gl_lnk_tfarr[plidx]
+            jtfq = (self._compiled.jtf0_by_idx[pjidx] @
+                    jnt.motion_tf(q_resolved[pjidx]))
+            self.gl_lnk_tfarr[lidx] = plnk_tfmat @ jtfq
         self._update_runtime()
-        return self.wd_lnk_tfarr
+        return self.gl_lnk_tfarr
 
     def mount(self, child, plnk, engage_tf=None):
         # TODO updated attach_to?
@@ -106,7 +108,6 @@ class MechBase:
         else:
             engage_tf = np.asarray(engage_tf, dtype=np.float32)
         self._mountings[child] = Mounting(child, plnk, engage_tf)
-        child.is_free = False
 
     def unmount(self, child):
         try:
@@ -115,6 +116,13 @@ class MechBase:
             raise ValueError("Child not mounted")
         child.is_free = True
         return m
+
+    def get_solver(self, chain):
+        if chain not in self._solvers:
+            _data_dir = os.path.join(self.structure.res_dir, "data")
+            self._solvers[chain] = orbkis.SELIKSolver(
+                chain, _data_dir)
+        return self._solvers[chain]
 
     def clone(self):
         """DOES NOT clone the affiliated scene"""
@@ -126,8 +134,9 @@ class MechBase:
         new.runtime_lnks = [lnk.clone() for lnk in self.runtime_lnks]
         new.runtime_lidx_map = {
             lnk: i for i, lnk in enumerate(new.runtime_lnks)}
-        new.wd_lnk_tfarr = self.wd_lnk_tfarr.copy()
+        new.gl_lnk_tfarr = self.gl_lnk_tfarr.copy()
         new._mountings = {}
+        new._solvers=self._solvers # solvers can be shared
         for k, m in self._mountings.items():
             child = m.child.clone()
             plidx = self.runtime_lidx_map[m.plnk]
@@ -234,7 +243,7 @@ class MechBase:
     def _update_runtime(self):
         # push FK result to runtime links
         for i, lnk in enumerate(self.runtime_lnks):
-            lnk.tf = self.wd_lnk_tfarr[i]
+            lnk.tf = self.gl_lnk_tfarr[i]
         # update mountings
         for m in self._mountings.values():
             self._update_mounting(m)

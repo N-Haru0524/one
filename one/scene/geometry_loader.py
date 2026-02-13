@@ -4,27 +4,25 @@ import struct
 import numpy as np
 import one.scene.geometry as osg
 
-_geometry_cache = {}
-
 
 def load_geometry(path):
-    if path in _geometry_cache:
-        return _geometry_cache[path]
+    if path in osg._geom_cache:
+        return osg._geom_cache[path]
     ext = os.path.splitext(path)[1].lower()
     if ext == ".stl":
-        geometry = load_stl(path)
+        geometry = _load_stl(path)
     elif ext == ".dae":
-        geometry = load_dae(path)
+        geometry = _load_dae(path)
     else:
-        raise ValueError(f"Unsupported geometry format: {ext}")
-    _geometry_cache[path] = geometry
+        raise ValueError(f"Unsupported geom format: {ext}")
+    osg._geom_cache[path] = geometry
     return geometry
 
 
 # ==============================
 # STL Loader and Saver
 # ==============================
-def load_stl(path):
+def _load_stl(path):
     with open(path, "rb") as f:
         f.read(80)  # ignore header
         tri_count_bytes = f.read(4)
@@ -40,18 +38,18 @@ def load_stl(path):
             return _load_stl_ascii(path)
 
 
-def save_stl(verts, faces, filename):
-    """Save geometry to binary STL file."""
-    verts = np.asarray(verts, dtype=np.float32)
-    faces = np.asarray(faces, dtype=np.int32)
+def _save_stl(vs, fs, filename):
+    """Save geom to binary STL file."""
+    vs = np.asarray(vs, dtype=np.float32)
+    fs = np.asarray(fs, dtype=np.int32)
     with open(filename, "wb") as f:
         # 80-byte header
-        header = b"ONE geometry binary STL"
+        header = b"ONE geom binary STL"
         f.write(header.ljust(80, b"\0"))
         # number of triangles
-        f.write(struct.pack("<I", len(faces)))
-        for face in faces:
-            v0, v1, v2 = verts[face]
+        f.write(struct.pack("<I", len(fs)))
+        for face in fs:
+            v0, v1, v2 = vs[face]
             # compute normal
             normal = np.cross(v1 - v0, v2 - v0)
             n = np.linalg.norm(normal)
@@ -69,8 +67,8 @@ def save_stl(verts, faces, filename):
 
 
 def _load_stl_binary(path, tri_count):
-    verts = np.zeros((tri_count * 3, 3), dtype=np.float32)
-    faces = np.zeros((tri_count, 3), dtype=np.int32)
+    vs = np.zeros((tri_count * 3, 3), dtype=np.float32)
+    fs = np.zeros((tri_count, 3), dtype=np.int32)
     with open(path, "rb") as f:
         f.read(80)  # header
         f.read(4)  # tri count
@@ -81,17 +79,17 @@ def _load_stl_binary(path, tri_count):
             v1 = struct.unpack("<fff", f.read(12))
             v2 = struct.unpack("<fff", f.read(12))
             base = i * 3
-            verts[base + 0] = v0
-            verts[base + 1] = v1
-            verts[base + 2] = v2
-            faces[i] = (base + 0, base + 1, base + 2)
+            vs[base + 0] = v0
+            vs[base + 1] = v1
+            vs[base + 2] = v2
+            fs[i] = (base + 0, base + 1, base + 2)
             f.read(2)  # skip attribute bytes
-    return osg.Geometry(verts, faces)
+    return osg.gen_geom_from_raw(vs, fs)
 
 
 def _load_stl_ascii(path):
-    verts = []
-    faces = []
+    vs = []
+    fs = []
     current_face = []
     with open(path, "r") as f:
         for line in f:
@@ -100,19 +98,20 @@ def _load_stl_ascii(path):
                 _, x, y, z = line.split()
                 current_face.append([float(x), float(y), float(z)])
             elif line.startswith("endfacet"):
-                i0 = len(verts) + 0
-                i1 = len(verts) + 1
-                i2 = len(verts) + 2
-                verts.extend(current_face)
-                faces.append([i0, i1, i2])
+                i0 = len(vs) + 0
+                i1 = len(vs) + 1
+                i2 = len(vs) + 2
+                vs.extend(current_face)
+                fs.append([i0, i1, i2])
                 current_face = []
-    return osg.Geometry(np.array(verts, dtype=np.float32), np.array(faces, dtype=np.int32))
+    return osg.gen_geom_from_raw(np.array(vs, dtype=np.float32),
+                                 np.array(fs, dtype=np.int32))
 
 
 # ==============================
 # DAE Loader
 # ==============================
-def load_dae(filename):
+def _load_dae(filename):
     tree = xml.etree.ElementTree.parse(filename)
     root = tree.getroot()
     # 1) auto extract namespace from root tag
@@ -149,7 +148,7 @@ def load_dae(filename):
 
     floats = find_positions()
     # reshape to Nx3 vertices
-    verts = floats.reshape((-1, 3)).astype(np.float32)
+    vs = floats.reshape((-1, 3)).astype(np.float32)
     idx = find_indices()
-    faces = idx.reshape((-1, 3))
-    return osg.Geometry(verts, faces)
+    fs = idx.reshape((-1, 3))
+    return osg.gen_geom_from_raw(vs, fs)
