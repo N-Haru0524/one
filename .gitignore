@@ -8,3 +8,4 @@ __pycache__/
 one/commu/communicationAS/dll/linux/librcc.so
 one/commu/communicationAS/dll/win/krcc64.dll
 one/commu/communicationAS/dll/linux/librcc.so.0.0.0
+uv.lock
