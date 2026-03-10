@@ -49,118 +49,10 @@ class PickPlacePlanner(HierarchicalPlannerBase):
         robot_qs, _ = self._split_state(qs, ee_values=ee_qs)
         return self._compose_state(robot_qs, ee_qs)
 
-    def _offset_tcp_pose(self, tcp_tf, direction, distance, motion_type):
-        tcp_tf = np.asarray(tcp_tf, dtype=np.float32)
-        offset_direction = self._normalize_direction(tcp_tf[:3, :3], direction)
-        offset = offset_direction * float(distance)
-        endpoint_tf = tcp_tf.copy()
-        if motion_type == 'approach':
-            endpoint_tf[:3, 3] = tcp_tf[:3, 3] - offset
-        elif motion_type == 'depart':
-            endpoint_tf[:3, 3] = tcp_tf[:3, 3] + offset
-        else:
-            raise ValueError(f'Unsupported motion_type: {motion_type}')
-        return endpoint_tf
-
-    def _approach_from_pre_pose(self, pose_tf, pre_pose_tf, fallback_direction, fallback_distance):
-        pose_tf = np.asarray(pose_tf, dtype=np.float32)
-        pre_pose_tf = np.asarray(pre_pose_tf, dtype=np.float32)
-        delta = pose_tf[:3, 3] - pre_pose_tf[:3, 3]
-        distance = float(np.linalg.norm(delta))
-        if distance > 1e-6:
-            return (delta / distance).astype(np.float32), distance
-        return fallback_direction, fallback_distance
-
-    def _gen_approach_via_pre_pose(self,
-                                   goal_tf,
-                                   pre_pose_tf,
-                                   goal_qs,
-                                   approach_ee_qs,
-                                   final_ee_qs,
-                                   start_qs,
-                                   fallback_direction,
-                                   fallback_distance,
-                                   linear_granularity,
-                                   pln_ctx,
-                                   use_rrt):
-        goal_tf = np.asarray(goal_tf, dtype=np.float32)
-        pre_pose_tf = np.asarray(pre_pose_tf, dtype=np.float32)
-        goal_robot_qs, _ = self._split_state(goal_qs, ee_values=final_ee_qs)
-        approach_goal_qs = self._compose_state(goal_robot_qs, approach_ee_qs)
-        pre_pos_err = float(np.linalg.norm(goal_tf[:3, 3] - pre_pose_tf[:3, 3]))
-        pre_rot_err = float(np.linalg.norm(goal_tf[:3, :3] - pre_pose_tf[:3, :3]))
-        if pre_pos_err <= 1e-6 and pre_rot_err <= 1e-6:
-            approach_direction, approach_distance = self._approach_from_pre_pose(
-                goal_tf,
-                pre_pose_tf,
-                fallback_direction,
-                fallback_distance,
-            )
-            return self.gen_approach(
-                goal_tcp_pos=goal_tf[:3, 3],
-                goal_tcp_rotmat=goal_tf[:3, :3],
-                goal_qs=approach_goal_qs,
-                start_qs=start_qs,
-                approach_direction=approach_direction,
-                approach_distance=approach_distance,
-                linear=approach_distance > 0.0,
-                linear_granularity=linear_granularity,
-                pln_ctx=pln_ctx,
-                use_rrt=use_rrt,
-            )
-
-        linear_app = self._linear_motion_between_poses(
-            start_pos=pre_pose_tf[:3, 3],
-            start_rotmat=pre_pose_tf[:3, :3],
-            goal_pos=goal_tf[:3, 3],
-            goal_rotmat=goal_tf[:3, :3],
-            seed_qs=approach_goal_qs,
-            ee_values=approach_ee_qs,
-            pln_ctx=pln_ctx,
-            pos_step=linear_granularity,
-        )
-        if linear_app is None:
-            return None
-
-        full_plan = linear_app
-        if start_qs is not None:
-            start2pre = self._connect_motion(
-                start_qs=start_qs,
-                goal_qs=linear_app.qs_list[0],
-                ee_values=approach_ee_qs,
-                pln_ctx=pln_ctx,
-                use_rrt=use_rrt,
-            )
-            if start2pre is None:
-                return None
-            full_plan = self._merge_plans(start2pre, linear_app)
-
-        goal_state = self._compose_state(goal_robot_qs, final_ee_qs)
-        if not np.allclose(full_plan.qs_list[-1], goal_state):
-            end_connect = self._connect_motion(
-                start_qs=full_plan.qs_list[-1],
-                goal_qs=goal_state,
-                ee_values=final_ee_qs,
-                pln_ctx=pln_ctx,
-                use_rrt=use_rrt,
-            )
-            if end_connect is None:
-                return None
-            full_plan = self._merge_plans(full_plan, end_connect)
-        return full_plan
-
     def reason_common_grasp_ids(self,
                                 grasp_collection,
                                 goal_pose_list,
                                 pick_pose=None,
-                                pick_approach_direction=None,
-                                pick_approach_distance=0.0,
-                                pick_depart_direction=None,
-                                pick_depart_distance=0.0,
-                                place_approach_direction=None,
-                                place_approach_distance=0.0,
-                                place_depart_distance=0.1,
-                                place_depart_direction=None,
                                 linear_granularity=0.03,
                                 exclude_entities=None,
                                 toggle_dbg=False):
@@ -176,19 +68,9 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 return 'no_ik'
             if stats['rejected_goal_collision']:
                 return 'goal_in_collision'
-            if stats['rejected_depart_failure']:
-                return 'depart_failed'
-            if stats['rejected_depart_seed_ik']:
-                return 'depart_seed_ik_failed'
-            if stats['rejected_depart_start_collision']:
-                return 'depart_start_in_collision'
-            if stats['rejected_depart_path_collision']:
-                return 'depart_path_in_collision'
-            if stats['rejected_depart_other']:
-                return 'depart_other'
             return 'unknown'
 
-        def build_pose_entries(label, obj_pose, direction=None, distance=0.0, motion_type=None, use_pick_pose=False):
+        def build_pose_entries(label, obj_pose, use_pick_pose=False):
             pose_entries = []
             open_ee_qs = self._max_open_ee_qs()
             for gid in available_ids:
@@ -204,55 +86,23 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                     if pick_pose is None:
                         raise ValueError('pick_pose is required for place grasp reasoning')
                     tcp_tf, ee_qs = self._grasp_pose(grasp_collection[gid], obj_pose=obj_pose)
-                if motion_type == 'depart' and distance > 0.0:
-                    tcp_tf = self._offset_tcp_pose(
-                        tcp_tf,
-                        direction=direction,
-                        distance=distance,
-                        motion_type=motion_type,
-                    )
                 pose_entries.append((gid, tcp_tf, ee_qs))
             return label, pose_entries
 
         endpoint_checks = []
         if pick_pose is not None:
-            if pick_approach_distance > 0.0:
-                endpoint_checks.append(build_pose_entries(
-                    'pick_approach_start',
-                    pick_pose,
-                    direction=pick_approach_direction,
-                    distance=pick_approach_distance,
-                    motion_type='approach',
-                    use_pick_pose=True,
-                ))
+            endpoint_checks.append(build_pose_entries(
+                'pick_approach_start',
+                pick_pose,
+                use_pick_pose=True,
+            ))
             endpoint_checks.append(build_pose_entries('pick_goal', pick_pose, use_pick_pose=True))
-            if pick_depart_distance > 0.0:
-                endpoint_checks.append(build_pose_entries(
-                    'pick_depart_end',
-                    pick_pose,
-                    direction=pick_depart_direction,
-                    distance=pick_depart_distance,
-                    motion_type='depart',
-                    use_pick_pose=True,
-                ))
         for goal_idx, goal_pose in enumerate(goal_pose_list):
-            if place_approach_distance > 0.0:
-                endpoint_checks.append(build_pose_entries(
-                    f'place_{goal_idx}_approach_start',
-                    goal_pose,
-                    direction=place_approach_direction,
-                    distance=place_approach_distance,
-                    motion_type='approach',
-                ))
+            endpoint_checks.append(build_pose_entries(
+                f'place_{goal_idx}_approach_start',
+                goal_pose,
+            ))
             endpoint_checks.append(build_pose_entries(f'place_{goal_idx}_goal', goal_pose))
-            if place_depart_distance > 0.0:
-                endpoint_checks.append(build_pose_entries(
-                    f'place_{goal_idx}_depart_end',
-                    goal_pose,
-                    direction=place_depart_direction,
-                    distance=place_depart_distance,
-                    motion_type='depart',
-                ))
 
         for label, pose_entries in endpoint_checks:
             next_available_ids = []
@@ -287,45 +137,18 @@ class PickPlacePlanner(HierarchicalPlannerBase):
         self._last_reason_common_grasp_report['survived_gids'] = available_ids.copy()
         return available_ids
 
-    def reason_common_gids(self, *args, **kwargs):
-        return self.reason_common_grasp_ids(*args, **kwargs)
-
-    def _repeat_param(self, values, count, default_value):
-        if values is None:
-            return [default_value] * count
-        if isinstance(values, (list, tuple)):
-            if len(values) != count:
-                raise ValueError(f'Expected {count} values, got {len(values)}')
-            return list(values)
-        return [values] * count
-
     def gen_pick_and_moveto(self,
                             obj_model,
                             grasp,
                             goal_pose_list,
                             gid=None,
                             start_qs=None,
-                            pick_approach_direction=None,
-                            pick_approach_distance=0.07,
-                            pick_depart_direction=None,
-                            pick_depart_distance=0.07,
-                            approach_direction_list=None,
-                            approach_distance_list=None,
                             linear_granularity=0.03,
                             use_rrt=True,
                             toggle_dbg=False):
         if start_qs is None:
             start_qs = self.robot.qs.copy()
-        if pick_approach_direction is None:
-            pick_approach_direction = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-        if pick_depart_direction is None:
-            pick_depart_direction = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        default_moveto_direction = np.array([0.0, 0.0, -1.0], dtype=np.float32)
         open_ee_qs = self._max_open_ee_qs()
-        approach_direction_list = self._repeat_param(
-            approach_direction_list, len(goal_pose_list), default_moveto_direction)
-        approach_distance_list = self._repeat_param(
-            approach_distance_list, len(goal_pose_list), 0.07)
 
         obj_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
         pick_tf, pick_pre_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose=obj_pose_tf)
@@ -334,8 +157,6 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             tcp_rotmat=pick_tf[:3, :3],
             ee_qs=ee_qs,
             pln_ctx=self.pln_ctx,
-            depart_direction=pick_depart_direction,
-            depart_distance=pick_depart_distance,
             linear_granularity=linear_granularity,
             ref_qs=start_qs,
         )
@@ -344,22 +165,18 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 print(f'[pickmove_pick gid={gid}] survived=1')
             elif pick_stats['rejected_goal_collision']:
                 print(f'[pickmove_pick gid={gid}] removed_goal_state_in_collision=1')
-            elif pick_stats['rejected_depart_failure']:
-                print(f'[pickmove_pick gid={gid}] removed_pick_depart_motion_failed=1')
             elif pick_stats['rejected_no_ik']:
                 print(f'[pickmove_pick gid={gid}] removed_no_ik=1')
         if pick_goal is None:
             return None
         current_state = self._compose_state(*self._split_state(start_qs, ee_values=ee_qs))
-        pick_plan = self._gen_approach_via_pre_pose(
+        pick_plan = self.gen_approach_via_pose(
             goal_tf=pick_tf,
-            pre_pose_tf=pick_pre_tf,
+            via_tf=pick_pre_tf,
             goal_qs=pick_goal.goal_qs,
-            approach_ee_qs=open_ee_qs,
+            via_ee_qs=open_ee_qs,
             final_ee_qs=ee_qs,
             start_qs=current_state,
-            fallback_direction=pick_approach_direction,
-            fallback_distance=pick_approach_distance,
             linear_granularity=linear_granularity,
             pln_ctx=self.pln_ctx,
             use_rrt=use_rrt,
@@ -393,15 +210,13 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 if toggle_dbg:
                     print(f'[pickmove_hold gid={gid} goal={goal_idx}] goal screening failed')
                 return None
-            goal_plan = self._gen_approach_via_pre_pose(
+            goal_plan = self.gen_approach_via_pose(
                 goal_tf=goal_tf,
-                pre_pose_tf=goal_pre_tf,
+                via_tf=goal_pre_tf,
                 goal_qs=goal_result.goal_qs,
-                approach_ee_qs=ee_qs,
+                via_ee_qs=ee_qs,
                 final_ee_qs=ee_qs,
                 start_qs=current_state,
-                fallback_direction=approach_direction_list[goal_idx],
-                fallback_distance=approach_distance_list[goal_idx],
                 linear_granularity=linear_granularity,
                 pln_ctx=self.pln_ctx,
                 use_rrt=use_rrt,
@@ -434,48 +249,18 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                            grasp_collection,
                            goal_pose_list,
                            start_qs=None,
-                           approach_direction_list=None,
-                           approach_distance_list=None,
-                           pick_approach_direction=None,
-                           pick_approach_distance=0.07,
-                           pick_depart_direction=None,
-                           pick_depart_distance=0.07,
-                           place_approach_direction=None,
-                           place_approach_distance=0.07,
-                           place_depart_direction=None,
-                           place_depart_distance=0.07,
                            linear_granularity=0.03,
                            reason_grasps=True,
                            use_rrt=True,
                            toggle_dbg=False):
         if start_qs is None:
             start_qs = self.robot.qs.copy()
-        if pick_approach_direction is None:
-            pick_approach_direction = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-        if pick_depart_direction is None:
-            pick_depart_direction = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        if approach_direction_list is None:
-            if place_approach_direction is None:
-                place_approach_direction = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-            approach_direction_list = [place_approach_direction] * len(goal_pose_list)
-        if approach_distance_list is None:
-            if place_approach_distance is None:
-                place_approach_distance = 0.07
-            approach_distance_list = [place_approach_distance] * len(goal_pose_list)
         obj_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
         if reason_grasps:
             common_gids = self.reason_common_grasp_ids(
                 grasp_collection=grasp_collection,
                 goal_pose_list=goal_pose_list,
                 pick_pose=obj_pose_tf,
-                pick_approach_direction=pick_approach_direction,
-                pick_approach_distance=pick_approach_distance,
-                pick_depart_direction=pick_depart_direction,
-                pick_depart_distance=pick_depart_distance,
-                place_approach_direction=place_approach_direction,
-                place_approach_distance=place_approach_distance,
-                place_depart_distance=place_depart_distance,
-                place_depart_direction=place_depart_direction,
                 linear_granularity=linear_granularity,
                 toggle_dbg=toggle_dbg,
             )
@@ -497,12 +282,6 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 goal_pose_list=goal_pose_list,
                 gid=gid,
                 start_qs=start_qs,
-                pick_approach_direction=pick_approach_direction,
-                pick_approach_distance=pick_approach_distance,
-                pick_depart_direction=pick_depart_direction,
-                pick_depart_distance=pick_depart_distance,
-                approach_direction_list=approach_direction_list,
-                approach_distance_list=approach_distance_list,
                 linear_granularity=linear_granularity,
                 use_rrt=use_rrt,
                 toggle_dbg=toggle_dbg,

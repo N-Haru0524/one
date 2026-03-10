@@ -48,29 +48,6 @@ def apply_gripper_state(gripper, active_qs):
     gripper.set_jaw_width(jaw_width)
 
 
-def is_sobj_collided(obj_a, obj_b):
-    detector = occs.create_detector(max_points=1)
-    for col_a in obj_a.collisions:
-        geom_a = getattr(col_a, 'geom', None)
-        if geom_a is None or not hasattr(geom_a, 'vs') or not hasattr(geom_a, 'fs'):
-            continue
-        for col_b in obj_b.collisions:
-            geom_b = getattr(col_b, 'geom', None)
-            if geom_b is None or not hasattr(geom_b, 'vs') or not hasattr(geom_b, 'fs'):
-                continue
-            hit_points = detector.detect_collision(
-                geom_a.vs,
-                geom_a.fs,
-                col_a.tf,
-                geom_b.vs,
-                geom_b.fs,
-                col_b.tf,
-            )
-            if hit_points is not None:
-                return True
-    return False
-
-
 def main():
     base = ovw.World(
         cam_pos=(-1.4, 1.4, 1.1),
@@ -123,8 +100,6 @@ def main():
 
     goal_bunny = bunny.clone()
     goal_bunny.set_rotmat_pos(rotmat=target_rotmat, pos=target_pos)
-    print(f'Start bunny/table collision: {is_sobj_collided(bunny, table)}')
-    print(f'Goal bunny/table collision: {is_sobj_collided(goal_bunny, table)}')
 
     collider = ocm.MJCollider()
     collider.append(robot)
@@ -151,16 +126,6 @@ def main():
         obj_model=bunny,
         grasp_collection=grasp_collection,
         goal_pose_list=[(target_pos, target_rotmat)],
-        # In ADPlanner, approach start = goal - direction * distance.
-        # For a top-down motion, use -Z so the pre-pose is above the goal.
-        pick_approach_direction=np.array([0.0, 0.0, -1.0], dtype=np.float32),
-        pick_approach_distance=0.1,
-        pick_depart_direction=np.array([0.0, 0.0, 1.0], dtype=np.float32),
-        pick_depart_distance=0.1,
-        place_approach_direction=np.array([0.0, 0.0, -1.0], dtype=np.float32),
-        place_approach_distance=0.1,
-        place_depart_direction=np.array([0.0, 0.0, 1.0], dtype=np.float32),
-        place_depart_distance=0.1,
         linear_granularity=0.02,
         reason_grasps=True,
         use_rrt=True,

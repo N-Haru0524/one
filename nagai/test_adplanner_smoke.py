@@ -335,7 +335,6 @@ class ADPlannerSmokeTest(unittest.TestCase):
             grasp_collection=[grasp0, grasp1],
             goal_pose_list=[(np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32))],
             pick_pose=(np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32)),
-            place_depart_distance=0.0,
         )
         self.assertEqual(common_gids, [1])
 
@@ -353,7 +352,6 @@ class ADPlannerSmokeTest(unittest.TestCase):
         ]
         common_sids = planner.reason_common_sids(
             goal_pose_list=goal_pose_list,
-            place_depart_distance=0.0,
         )
         self.assertEqual(common_sids, [1])
 
@@ -367,7 +365,6 @@ class ADPlannerSmokeTest(unittest.TestCase):
             grasp_collection=[grasp],
             goal_pose_list=[(np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32))],
             pick_pose=(np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32)),
-            place_depart_distance=0.0,
         )
         self.assertEqual(common_gids, [0])
 
@@ -388,7 +385,6 @@ class ADPlannerSmokeTest(unittest.TestCase):
             goal_pose_list=[(np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32))],
             pick_pose=(np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32)),
             exclude_entities=[sentinel],
-            place_depart_distance=0.0,
         )
         self.assertEqual(common_gids, [0])
         self.assertIn('survived_gids', planner._last_reason_common_grasp_report)
@@ -408,7 +404,6 @@ class ADPlannerSmokeTest(unittest.TestCase):
             grasp_collection=[grasp0, grasp1],
             goal_pose_list=[(np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32))],
             pick_pose=(np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32)),
-            place_depart_distance=0.0,
         )
         self.assertEqual(common_gids, [1])
         failure = planner._last_reason_common_grasp_report['failures'][0]
@@ -436,7 +431,7 @@ class ADPlannerSmokeTest(unittest.TestCase):
         grasp = self._make_grasp([0.3, 0.0, 0.0])
         screen_calls = {'count': 0}
         original_screen_pose = planner._screen_pose_with_stats
-        original_plan = planner.gen_approach
+        original_plan = planner.gen_approach_via_pose
 
         def counting_screen_pose(*args, **kwargs):
             screen_calls['count'] += 1
@@ -447,7 +442,7 @@ class ADPlannerSmokeTest(unittest.TestCase):
             return self.utils_mod.MotionData([np.zeros(5, dtype=np.float32), np.ones(5, dtype=np.float32)])
 
         planner._screen_pose_with_stats = counting_screen_pose
-        planner.gen_approach = fake_plan
+        planner.gen_approach_via_pose = fake_plan
         plan = planner.gen_pick_and_place(
             obj_model=obj,
             grasp_collection=[grasp],
@@ -455,7 +450,7 @@ class ADPlannerSmokeTest(unittest.TestCase):
             reason_grasps=True,
         )
         self.assertIsNotNone(plan)
-        self.assertEqual(screen_calls['count'], 8)
+        self.assertEqual(screen_calls['count'], 6)
 
 
 if __name__ == '__main__':

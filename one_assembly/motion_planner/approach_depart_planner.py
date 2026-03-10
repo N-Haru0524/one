@@ -195,6 +195,92 @@ class ADPlanner:
             pos_step=granularity,
         )
 
+    def gen_approach_via_pose(self,
+                              goal_tf,
+                              via_tf,
+                              goal_qs,
+                              start_qs=None,
+                              via_ee_qs=None,
+                              final_ee_qs=None,
+                              linear_granularity=0.03,
+                              pln_ctx=None,
+                              use_rrt=True):
+        goal_tf = np.asarray(goal_tf, dtype=np.float32)
+        via_tf = np.asarray(via_tf, dtype=np.float32)
+        goal_robot_qs, resolved_final_ee_qs = self._split_state(goal_qs, ee_values=final_ee_qs)
+        resolved_via_ee_qs = self._resolve_ee_qs(via_ee_qs) if self.ee_actor is not None else None
+        if self.ee_actor is not None and resolved_via_ee_qs is None:
+            resolved_via_ee_qs = resolved_final_ee_qs
+        via_goal_qs = self._compose_state(goal_robot_qs, resolved_via_ee_qs)
+        via_pos_err = float(np.linalg.norm(goal_tf[:3, 3] - via_tf[:3, 3]))
+        via_rot_err = float(np.linalg.norm(goal_tf[:3, :3] - via_tf[:3, :3]))
+        if via_pos_err <= 1e-6 and via_rot_err <= 1e-6:
+            full_plan = self._motion_plan([via_goal_qs])
+            if start_qs is not None:
+                start2via = self._connect_motion(
+                    start_qs=start_qs,
+                    goal_qs=via_goal_qs,
+                    ee_values=resolved_via_ee_qs,
+                    pln_ctx=pln_ctx,
+                    use_rrt=use_rrt,
+                )
+                if start2via is None:
+                    return None
+                full_plan = start2via
+            goal_state = self._compose_state(goal_robot_qs, resolved_final_ee_qs)
+            if not np.allclose(full_plan.qs_list[-1], goal_state):
+                end_connect = self._connect_motion(
+                    start_qs=full_plan.qs_list[-1],
+                    goal_qs=goal_state,
+                    ee_values=resolved_final_ee_qs,
+                    pln_ctx=pln_ctx,
+                    use_rrt=use_rrt,
+                )
+                if end_connect is None:
+                    return None
+                full_plan = self._merge_plans(full_plan, end_connect)
+            return full_plan
+
+        linear_app = self._linear_motion_between_poses(
+            start_pos=via_tf[:3, 3],
+            start_rotmat=via_tf[:3, :3],
+            goal_pos=goal_tf[:3, 3],
+            goal_rotmat=goal_tf[:3, :3],
+            seed_qs=via_goal_qs,
+            ee_values=resolved_via_ee_qs,
+            pln_ctx=pln_ctx,
+            pos_step=linear_granularity,
+        )
+        if linear_app is None:
+            return None
+
+        full_plan = linear_app
+        if start_qs is not None:
+            start2via = self._connect_motion(
+                start_qs=start_qs,
+                goal_qs=linear_app.qs_list[0],
+                ee_values=resolved_via_ee_qs,
+                pln_ctx=pln_ctx,
+                use_rrt=use_rrt,
+            )
+            if start2via is None:
+                return None
+            full_plan = self._merge_plans(start2via, linear_app)
+
+        goal_state = self._compose_state(goal_robot_qs, resolved_final_ee_qs)
+        if not np.allclose(full_plan.qs_list[-1], goal_state):
+            end_connect = self._connect_motion(
+                start_qs=full_plan.qs_list[-1],
+                goal_qs=goal_state,
+                ee_values=resolved_final_ee_qs,
+                pln_ctx=pln_ctx,
+                use_rrt=use_rrt,
+            )
+            if end_connect is None:
+                return None
+            full_plan = self._merge_plans(full_plan, end_connect)
+        return full_plan
+
     def _connect_motion(self, start_qs, goal_qs,
                         ee_values=None,
                         pln_ctx=None,
