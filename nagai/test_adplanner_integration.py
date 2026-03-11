@@ -5,8 +5,6 @@ import types
 import unittest
 from pathlib import Path
 
-import numpy as np
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -54,6 +52,7 @@ def bootstrap_one_headless():
 
 bootstrap_one_headless()
 
+import one.utils.math as oum
 from one import khi_rs007l, ocm, omppc, or_2fg7  # noqa: E402
 from one_assembly.motion_planner import ADPlanner  # noqa: E402
 
@@ -72,20 +71,20 @@ class ADPlannerIntegrationTest(unittest.TestCase):
         cls.collider.compile(margin=0.0)
         cls.pln_ctx = omppc.PlanningContext(collider=cls.collider)
         cls.planner = ADPlanner(cls.robot, pln_ctx=cls.pln_ctx)
-        cls.goal_qs = np.array(
-            [0.0, -np.pi / 4, np.pi / 2, 0.0, np.pi / 4, 0.0],
-            dtype=np.float32,
+        cls.goal_qs = oum.np.array(
+            [0.0, -oum.pi / 4, oum.pi / 2, 0.0, oum.pi / 4, 0.0],
+            dtype=oum.np.float32,
         )
-        cls.end_qs = np.array(
+        cls.end_qs = oum.np.array(
             [0.2, -0.6, 1.0, 0.1, 0.5, 0.0],
-            dtype=np.float32,
+            dtype=oum.np.float32,
         )
 
     def test_linear_approach_to_goal_qs(self):
         plan = self._run_quietly(
             self.planner.gen_approach,
             goal_qs=self.goal_qs,
-            approach_direction=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+            approach_direction=oum.vec(0.0, 0.0, -1.0).astype(oum.np.float32),
             approach_distance=0.05,
             linear=True,
             linear_granularity=0.02,
@@ -93,7 +92,7 @@ class ADPlannerIntegrationTest(unittest.TestCase):
         )
         self.assertIsNotNone(plan)
         self.assertGreaterEqual(len(plan), 2)
-        np.testing.assert_allclose(plan.qs_list[-1], self.goal_qs, atol=1e-4)
+        oum.np.testing.assert_allclose(plan.qs_list[-1], self.goal_qs, atol=1e-4)
 
     def test_approach_depart_with_goal_qs(self):
         plan = self._run_quietly(
@@ -101,8 +100,8 @@ class ADPlannerIntegrationTest(unittest.TestCase):
             goal_qs=self.goal_qs,
             start_qs=self.robot.qs.copy(),
             end_qs=self.end_qs,
-            approach_direction=np.array([0.0, 0.0, -1.0], dtype=np.float32),
-            depart_direction=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+            approach_direction=oum.vec(0.0, 0.0, -1.0).astype(oum.np.float32),
+            depart_direction=oum.vec(0.0, 0.0, 1.0).astype(oum.np.float32),
             approach_distance=0.03,
             depart_distance=0.03,
             approach_linear=True,
@@ -112,8 +111,8 @@ class ADPlannerIntegrationTest(unittest.TestCase):
         )
         self.assertIsNotNone(plan)
         self.assertGreaterEqual(len(plan), 3)
-        np.testing.assert_allclose(plan.qs_list[0], self.robot.qs, atol=1e-6)
-        np.testing.assert_allclose(plan.qs_list[-1], self.end_qs, atol=1e-4)
+        oum.np.testing.assert_allclose(plan.qs_list[0], self.robot.qs, atol=1e-6)
+        oum.np.testing.assert_allclose(plan.qs_list[-1], self.end_qs, atol=1e-4)
 
     def test_combined_robot_and_ee_qs(self):
         robot = khi_rs007l.RS007L()
@@ -125,16 +124,16 @@ class ADPlannerIntegrationTest(unittest.TestCase):
         collider.actors = [robot, gripper]
         collider.compile(margin=0.0)
         planner = ADPlanner(robot, pln_ctx=omppc.PlanningContext(collider=collider), ee_actor=gripper)
-        goal_state = np.concatenate(
+        goal_state = oum.np.concatenate(
             [
                 self.goal_qs,
-                np.array([0.01], dtype=np.float32),
+                oum.np.array([0.01], dtype=oum.np.float32),
             ]
-        ).astype(np.float32)
+        ).astype(oum.np.float32)
         plan = self._run_quietly(
             planner.gen_approach,
             goal_qs=goal_state,
-            approach_direction=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+            approach_direction=oum.vec(0.0, 0.0, -1.0).astype(oum.np.float32),
             approach_distance=0.03,
             linear=True,
             linear_granularity=0.02,
@@ -142,7 +141,7 @@ class ADPlannerIntegrationTest(unittest.TestCase):
         )
         self.assertIsNotNone(plan)
         self.assertEqual(plan.qs_list[-1].shape[0], robot.ndof + gripper.ndof)
-        np.testing.assert_allclose(plan.qs_list[-1], goal_state, atol=1e-4)
+        oum.np.testing.assert_allclose(plan.qs_list[-1], goal_state, atol=1e-4)
 
 
 if __name__ == '__main__':

@@ -1,6 +1,4 @@
-import numpy as np
-
-from one import oum
+import one.utils.math as oum
 
 from .hierarchical import HierarchicalPlannerBase
 from . import utils
@@ -10,9 +8,9 @@ class PickPlacePlanner(HierarchicalPlannerBase):
     def _grasp_fields(self, grasp):
         if not isinstance(grasp, (tuple, list)) or len(grasp) < 4:
             raise ValueError('grasp must be a tuple like (pose_tf, pre_pose_tf, jaw_width, score)')
-        pose_tf = np.asarray(grasp[0], dtype=np.float32)
-        pre_pose_tf = np.asarray(grasp[1], dtype=np.float32)
-        jaw_width = float(np.asarray(grasp[2], dtype=np.float32).reshape(-1)[0])
+        pose_tf = oum.np.asarray(grasp[0], dtype=oum.np.float32)
+        pre_pose_tf = oum.np.asarray(grasp[1], dtype=oum.np.float32)
+        jaw_width = float(oum.np.asarray(grasp[2], dtype=oum.np.float32).reshape(-1)[0])
         score = float(grasp[3])
         if pose_tf.shape != (4, 4):
             raise ValueError('grasp pose_tf must be a (4, 4) transform')
@@ -41,8 +39,8 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             return None
         if hasattr(self.ee_actor, 'set_jaw_width') and hasattr(self.ee_actor, 'jaw_range'):
             ee_actor = self.ee_actor.clone()
-            ee_actor.set_jaw_width(float(np.asarray(ee_actor.jaw_range, dtype=np.float32)[1]))
-            return np.asarray(ee_actor.qs[:ee_actor.ndof], dtype=np.float32)
+            ee_actor.set_jaw_width(float(oum.np.asarray(ee_actor.jaw_range, dtype=oum.np.float32)[1]))
+            return oum.np.asarray(ee_actor.qs[:ee_actor.ndof], dtype=oum.np.float32)
         return self._default_ee_qs()
 
     def _compose_with_ee_qs(self, qs, ee_qs):
@@ -127,7 +125,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                         },
                     )
                     if toggle_dbg:
-                        pos = np.array2string(tcp_tf[:3, 3], precision=4)
+                        pos = oum.np.array2string(tcp_tf[:3, 3], precision=4)
                         print(f'[pickplace_reason gid={gid}] label={label}, reason={reason}, tcp_pos={pos}')
                     continue
                 next_available_ids.append(gid)
@@ -237,7 +235,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
         full_plan = pick_plan.copy()
         full_plan.extend(moveto_plan.qs_list[1:])
         release_state = self._compose_with_ee_qs(full_plan.qs_list[-1], open_ee_qs)
-        if not np.allclose(full_plan.qs_list[-1], release_state):
+        if not oum.np.allclose(full_plan.qs_list[-1], release_state):
             full_plan.extend([release_state])
         full_plan.events['attach'] = len(pick_plan.qs_list) - 1
         full_plan.events['release'] = len(full_plan.qs_list) - 1

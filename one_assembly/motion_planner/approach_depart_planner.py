@@ -1,7 +1,6 @@
-import numpy as np
-
 import one.motion.trajectory.cartesian as omtc
 import one.robots.manipulators.manipulator_base as orm
+import one.utils.math as oum
 
 from . import utils
 
@@ -27,10 +26,10 @@ class ADPlanner:
 
     def _normalize_direction(self, rotmat, direction):
         if direction is None:
-            vec = np.asarray(rotmat[:, 2], dtype=np.float32)
+            vec = oum.np.asarray(rotmat[:, 2], dtype=oum.np.float32)
         else:
-            vec = np.asarray(direction, dtype=np.float32)
-        norm = float(np.linalg.norm(vec))
+            vec = oum.np.asarray(direction, dtype=oum.np.float32)
+        norm = float(oum.np.linalg.norm(vec))
         if norm <= 0.0:
             raise ValueError('direction must be non-zero')
         return vec / norm
@@ -48,23 +47,23 @@ class ADPlanner:
     def _default_ee_qs(self):
         if self.ee_actor is None:
             return None
-        return np.asarray(self.ee_actor.qs[:self.ee_actor.ndof], dtype=np.float32)
+        return oum.np.asarray(self.ee_actor.qs[:self.ee_actor.ndof], dtype=oum.np.float32)
 
     def _resolve_ee_qs(self, ee_values=None):
         if self.ee_actor is None:
             return None
         if ee_values is None:
             return self._default_ee_qs()
-        ee_qs = np.asarray(ee_values, dtype=np.float32)
+        ee_qs = oum.np.asarray(ee_values, dtype=oum.np.float32)
         if ee_qs.size == self.ee_actor.ndof:
             return ee_qs
         full_qs_len = len(self.ee_actor.qs)
         if ee_qs.size == full_qs_len:
-            return np.asarray(ee_qs[:self.ee_actor.ndof], dtype=np.float32)
+            return oum.np.asarray(ee_qs[:self.ee_actor.ndof], dtype=oum.np.float32)
         if self.ee_actor.ndof == 1 and ee_qs.size == 1:
             return ee_qs
-        if self.ee_actor.ndof == 1 and ee_qs.size == 2 and np.allclose(ee_qs[0], ee_qs[1]):
-            return np.asarray([ee_qs[0]], dtype=np.float32)
+        if self.ee_actor.ndof == 1 and ee_qs.size == 2 and oum.np.allclose(ee_qs[0], ee_qs[1]):
+            return oum.np.asarray([ee_qs[0]], dtype=oum.np.float32)
         if ee_qs.size != self.ee_actor.ndof:
             raise ValueError(
                 f'Expected ee state with {self.ee_actor.ndof} active values '
@@ -73,7 +72,7 @@ class ADPlanner:
         return ee_qs
 
     def _split_state(self, qs, ee_values=None):
-        qs = np.asarray(qs, dtype=np.float32)
+        qs = oum.np.asarray(qs, dtype=oum.np.float32)
         robot_ndof = self.robot.ndof
         if self.ee_actor is None:
             if qs.size != robot_ndof:
@@ -90,13 +89,13 @@ class ADPlanner:
         )
 
     def _compose_state(self, robot_qs, ee_qs=None):
-        robot_qs = np.asarray(robot_qs, dtype=np.float32)
+        robot_qs = oum.np.asarray(robot_qs, dtype=oum.np.float32)
         if self.ee_actor is None:
             return robot_qs
         if ee_qs is None:
             ee_qs = self._default_ee_qs()
-        ee_qs = np.asarray(ee_qs, dtype=np.float32)
-        return np.concatenate([robot_qs, ee_qs]).astype(np.float32)
+        ee_qs = oum.np.asarray(ee_qs, dtype=oum.np.float32)
+        return oum.np.concatenate([robot_qs, ee_qs]).astype(oum.np.float32)
 
     def _robot_at_qs(self, qs):
         qs, _ = self._split_state(qs)
@@ -109,7 +108,7 @@ class ADPlanner:
         return tcp_tf[:3, 3].copy(), tcp_tf[:3, :3].copy()
 
     def _motion_plan(self, q_list):
-        q_list = [np.asarray(qs, dtype=np.float32) for qs in q_list]
+        q_list = [oum.np.asarray(qs, dtype=oum.np.float32) for qs in q_list]
         return utils.MotionData(q_list)
 
     def _linear_motion_between_poses(self, start_pos, start_rotmat,
@@ -118,8 +117,8 @@ class ADPlanner:
                                      ee_values=None,
                                      pln_ctx=None,
                                      pos_step=0.01,
-                                     rot_step=np.deg2rad(2.0),
-                                     max_edge_step=np.pi / 180):
+                                     rot_step=oum.np.deg2rad(2.0),
+                                     max_edge_step=oum.pi / 180):
         del max_edge_step
         if pln_ctx is None:
             pln_ctx = self.pln_ctx
@@ -155,12 +154,12 @@ class ADPlanner:
                                pln_ctx=None,
                                granularity=0.02,
                                motion_type='sink'):
-        goal_tcp_pos = np.asarray(goal_tcp_pos, dtype=np.float32)
-        goal_tcp_rotmat = np.asarray(goal_tcp_rotmat, dtype=np.float32)
+        goal_tcp_pos = oum.np.asarray(goal_tcp_pos, dtype=oum.np.float32)
+        goal_tcp_rotmat = oum.np.asarray(goal_tcp_rotmat, dtype=oum.np.float32)
         direction = self._normalize_direction(goal_tcp_rotmat, direction)
         offset = direction * float(distance)
         if ref_qs is None:
-            ref_qs = np.asarray(self.robot.qs, dtype=np.float32)
+            ref_qs = oum.np.asarray(self.robot.qs, dtype=oum.np.float32)
         else:
             ref_qs, _ = self._split_state(ref_qs, ee_values=ee_values)
         if motion_type == 'sink':
@@ -205,15 +204,15 @@ class ADPlanner:
                               linear_granularity=0.03,
                               pln_ctx=None,
                               use_rrt=True):
-        goal_tf = np.asarray(goal_tf, dtype=np.float32)
-        via_tf = np.asarray(via_tf, dtype=np.float32)
+        goal_tf = oum.np.asarray(goal_tf, dtype=oum.np.float32)
+        via_tf = oum.np.asarray(via_tf, dtype=oum.np.float32)
         goal_robot_qs, resolved_final_ee_qs = self._split_state(goal_qs, ee_values=final_ee_qs)
         resolved_via_ee_qs = self._resolve_ee_qs(via_ee_qs) if self.ee_actor is not None else None
         if self.ee_actor is not None and resolved_via_ee_qs is None:
             resolved_via_ee_qs = resolved_final_ee_qs
         via_goal_qs = self._compose_state(goal_robot_qs, resolved_via_ee_qs)
-        via_pos_err = float(np.linalg.norm(goal_tf[:3, 3] - via_tf[:3, 3]))
-        via_rot_err = float(np.linalg.norm(goal_tf[:3, :3] - via_tf[:3, :3]))
+        via_pos_err = float(oum.np.linalg.norm(goal_tf[:3, 3] - via_tf[:3, 3]))
+        via_rot_err = float(oum.np.linalg.norm(goal_tf[:3, :3] - via_tf[:3, :3]))
         if via_pos_err <= 1e-6 and via_rot_err <= 1e-6:
             full_plan = self._motion_plan([via_goal_qs])
             if start_qs is not None:
@@ -228,7 +227,7 @@ class ADPlanner:
                     return None
                 full_plan = start2via
             goal_state = self._compose_state(goal_robot_qs, resolved_final_ee_qs)
-            if not np.allclose(full_plan.qs_list[-1], goal_state):
+            if not oum.np.allclose(full_plan.qs_list[-1], goal_state):
                 end_connect = self._connect_motion(
                     start_qs=full_plan.qs_list[-1],
                     goal_qs=goal_state,
@@ -268,7 +267,7 @@ class ADPlanner:
             full_plan = self._merge_plans(start2via, linear_app)
 
         goal_state = self._compose_state(goal_robot_qs, resolved_final_ee_qs)
-        if not np.allclose(full_plan.qs_list[-1], goal_state):
+        if not oum.np.allclose(full_plan.qs_list[-1], goal_state):
             end_connect = self._connect_motion(
                 start_qs=full_plan.qs_list[-1],
                 goal_qs=goal_state,
@@ -285,10 +284,10 @@ class ADPlanner:
                         ee_values=None,
                         pln_ctx=None,
                         use_rrt=True,
-                        step_size=np.pi / 36,
+                        step_size=oum.pi / 36,
                         max_iters=2000,
                         time_limit=None,
-                        max_edge_step=np.pi / 180):
+                        max_edge_step=oum.pi / 180):
         if pln_ctx is None:
             pln_ctx = self.pln_ctx
         path = utils.plan_joint_path(
@@ -385,8 +384,8 @@ class ADPlanner:
                 return self._motion_plan([goal_qs]) if goal_qs is not None else None
             if goal_qs is None:
                 goal_qs = self.robot.ik_tcp_nearest(
-                    tgt_rotmat=np.asarray(goal_tcp_rotmat, dtype=np.float32),
-                    tgt_pos=np.asarray(goal_tcp_pos, dtype=np.float32),
+                    tgt_rotmat=oum.np.asarray(goal_tcp_rotmat, dtype=oum.np.float32),
+                    tgt_pos=oum.np.asarray(goal_tcp_pos, dtype=oum.np.float32),
                     ref_qs=self._split_state(start_qs)[0],
                 )
                 if goal_qs is None:
@@ -420,7 +419,7 @@ class ADPlanner:
             if start2app is None:
                 return None
             full_plan = self._merge_plans(start2app, linear_app)
-        if goal_qs is not None and not np.allclose(full_plan.qs_list[-1], goal_qs):
+        if goal_qs is not None and not oum.np.allclose(full_plan.qs_list[-1], goal_qs):
             end_connect = self._connect_motion(
                 start_qs=full_plan.qs_list[-1],
                 goal_qs=goal_qs,
@@ -459,8 +458,8 @@ class ADPlanner:
             goal_target = goal_qs
             if goal_target is None:
                 goal_target = self.robot.ik_tcp_nearest(
-                    tgt_rotmat=np.asarray(goal_tcp_rotmat, dtype=np.float32),
-                    tgt_pos=np.asarray(goal_tcp_pos, dtype=np.float32),
+                    tgt_rotmat=oum.np.asarray(goal_tcp_rotmat, dtype=oum.np.float32),
+                    tgt_pos=oum.np.asarray(goal_tcp_pos, dtype=oum.np.float32),
                     ref_qs=self._split_state(start_qs)[0],
                 )
                 if goal_target is None:

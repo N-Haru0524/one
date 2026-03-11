@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 
-import numpy as np
-
-from one import oum
+import one.utils.math as oum
 
 from .approach_depart_planner import ADPlanner
 from . import utils
@@ -10,15 +8,15 @@ from . import utils
 
 @dataclass
 class ScreenResult:
-    goal_qs: np.ndarray
-    ee_qs: np.ndarray | None
+    goal_qs: oum.np.ndarray
+    ee_qs: oum.np.ndarray | None
     depart_plan: utils.MotionData | None = None
 
 
 @dataclass
 class CandidateRecord:
     key: int
-    pose_tf: np.ndarray
+    pose_tf: oum.np.ndarray
     screen_result: ScreenResult
 
 
@@ -30,7 +28,7 @@ class HierarchicalPlannerBase(ADPlanner):
     def _pose_to_tf(self, pose):
         if isinstance(pose, (tuple, list)) and len(pose) == 2:
             return oum.tf_from_rotmat_pos(pose[1], pose[0])
-        pose = np.asarray(pose, dtype=np.float32)
+        pose = oum.np.asarray(pose, dtype=oum.np.float32)
         if pose.shape == (4, 4):
             return pose
         raise ValueError('pose must be a (pos, rotmat) pair or a (4, 4) transform')
@@ -70,19 +68,19 @@ class HierarchicalPlannerBase(ADPlanner):
             return None
         if ee_value is None:
             return self._default_ee_qs()
-        ee_value_arr = np.asarray(ee_value, dtype=np.float32)
+        ee_value_arr = oum.np.asarray(ee_value, dtype=oum.np.float32)
         if ee_value_arr.ndim == 0 or ee_value_arr.size == 1:
             if hasattr(self.ee_actor, 'set_jaw_width'):
                 ee_actor = self.ee_actor.clone()
                 ee_actor.set_jaw_width(float(ee_value_arr.reshape(-1)[0]))
-                return np.asarray(ee_actor.qs[:ee_actor.ndof], dtype=np.float32)
+                return oum.np.asarray(ee_actor.qs[:ee_actor.ndof], dtype=oum.np.float32)
         return self._resolve_ee_qs(ee_value_arr)
 
     def _pose_error(self, src_tf, dst_tf):
-        pos_err = float(np.linalg.norm(src_tf[:3, 3] - dst_tf[:3, 3]))
+        pos_err = float(oum.np.linalg.norm(src_tf[:3, 3] - dst_tf[:3, 3]))
         rot_delta = src_tf[:3, :3].T @ dst_tf[:3, :3]
-        cos_theta = np.clip((np.trace(rot_delta) - 1.0) * 0.5, -1.0, 1.0)
-        rot_err = float(np.arccos(cos_theta))
+        cos_theta = oum.np.clip((oum.np.trace(rot_delta) - 1.0) * 0.5, -1.0, 1.0)
+        rot_err = float(oum.np.arccos(cos_theta))
         return 10.0 * pos_err + rot_err
 
     def _sort_pose_candidates(self, pose_tf_list):
@@ -96,10 +94,10 @@ class HierarchicalPlannerBase(ADPlanner):
         ik_solutions = self.robot.ik_tcp(tgt_rotmat=tgt_rotmat, tgt_pos=tgt_pos)
         if not ik_solutions:
             return []
-        ref_qs = np.asarray(ref_qs, dtype=np.float32)
+        ref_qs = oum.np.asarray(ref_qs, dtype=oum.np.float32)
         return sorted(
-            (np.asarray(qs, dtype=np.float32) for qs in ik_solutions),
-            key=lambda qs: np.linalg.norm(qs - ref_qs),
+            (oum.np.asarray(qs, dtype=oum.np.float32) for qs in ik_solutions),
+            key=lambda qs: oum.np.linalg.norm(qs - ref_qs),
         )
 
     def _screen_pose_with_stats(self,
@@ -201,7 +199,7 @@ class HierarchicalPlannerBase(ADPlanner):
                           debug_label='reason'):
         plan_pln_ctx = self._filtered_pln_ctx(exclude_entities=exclude_entities) if pln_ctx is None else pln_ctx
         records = []
-        cur_ref_qs = self.robot.qs if ref_qs is None else np.asarray(ref_qs, dtype=np.float32)
+        cur_ref_qs = self.robot.qs if ref_qs is None else oum.np.asarray(ref_qs, dtype=oum.np.float32)
         total_poses = len(keyed_pose_list)
         rejected_no_ik = 0
         rejected_goal_collision = 0

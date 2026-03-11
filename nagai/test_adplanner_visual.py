@@ -2,13 +2,12 @@ import time
 import sys
 from pathlib import Path
 
-import numpy as np
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from one import oum, ovw, ouc, ossop, ocm, omppc, khi_rs007l
+from one import ovw, ouc, ossop, ocm, omppc, khi_rs007l
+import one.utils.math as oum
 from one_assembly.motion_planner import ADPlanner
 
 
@@ -46,14 +45,14 @@ collider.compile(margin=0.0)
 
 planner = ADPlanner(robot, pln_ctx=omppc.PlanningContext(collider=collider))
 
-start_qs = np.zeros(6, dtype=np.float32)
-goal_qs = np.array(
+start_qs = oum.np.zeros(6, dtype=oum.np.float32)
+goal_qs = oum.np.array(
     [-0.35, -0.0, 1.20, 0.05, 0.72, 0.10],
-    dtype=np.float32,
+    dtype=oum.np.float32,
 )
-end_qs = np.array(
+end_qs = oum.np.array(
     [0.35, -0.50, 0.95, -0.10, 0.55, -0.15],
-    dtype=np.float32,
+    dtype=oum.np.float32,
 )
 robot_goal_pose = robot.clone()
 robot_goal_pose.fk(qs=goal_qs)
@@ -66,9 +65,9 @@ state_plan = planner.gen_approach_depart(
     goal_tcp_rotmat=goal_tcp_tf[:3, :3],
     start_qs=start_qs,
     end_qs=end_qs,
-    approach_direction=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+    approach_direction=oum.vec(0.0, 0.0, -1.0).astype(oum.np.float32),
     approach_distance=0.05,
-    depart_direction=np.array([0.0, 0.0, 1.0], dtype=np.float32),
+    depart_direction=oum.vec(0.0, 0.0, 1.0).astype(oum.np.float32),
     depart_distance=0.05,
     linear_granularity=0.02,
     use_rrt=False,

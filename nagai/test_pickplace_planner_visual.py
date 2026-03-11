@@ -2,32 +2,31 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from one import oum, ovw, ouc, ossop, osso, ocm, khi_rs007l, or_2fg7
+from one import ovw, ouc, ossop, osso, ocm, khi_rs007l, or_2fg7
 import one.collider.cpu_simd as occs
 import one.geom.fitting as ogf
 import one.geom.surface as ogs
 import one.grasp.placement as ogp
 from one_assembly.motion_planner import PickPlacePlanner, utils as omp_utils
 from one.grasp.antipodal import antipodal
+import one.utils.math as oum
 
 def bunny_top_grasp_collection(obj_pose_tf, jaw_width, z_offset=0.025):
     grasp_collection = []
     obj_pos = obj_pose_tf[:3, 3]
-    for yaw in (0.0, np.pi * 0.5, np.pi, np.pi * 1.5):
+    for yaw in (0.0, oum.pi * 0.5, oum.pi, oum.pi * 1.5):
         tcp_rotmat = (
-            oum.rotmat_from_euler(0.0, np.pi, 0.0) @
+            oum.rotmat_from_euler(0.0, oum.pi, 0.0) @
             oum.rotmat_from_euler(0.0, 0.0, yaw)
-        ).astype(np.float32)
-        tcp_pos = obj_pos + np.array([0.0, 0.0, z_offset], dtype=np.float32)
+        ).astype(oum.np.float32)
+        tcp_pos = obj_pos + oum.vec(0.0, 0.0, z_offset).astype(oum.np.float32)
         tcp_tf = oum.tf_from_rotmat_pos(tcp_rotmat, tcp_pos)
         pre_pose_tf = tcp_tf.copy()
-        pre_pose_tf[:3, 3] += np.array([0.0, 0.0, 0.05], dtype=np.float32)
+        pre_pose_tf[:3, 3] += oum.vec(0.0, 0.0, 0.05).astype(oum.np.float32)
         grasp_collection.append((tcp_tf, pre_pose_tf, float(jaw_width), 1.0))
     return grasp_collection
 
@@ -38,7 +37,7 @@ def split_state(robot, gripper, qs):
 
 
 def apply_gripper_state(gripper, active_qs):
-    active_qs = np.asarray(active_qs, dtype=np.float32).reshape(-1)
+    active_qs = oum.np.asarray(active_qs, dtype=oum.np.float32).reshape(-1)
     if active_qs.size == 0:
         return
     if active_qs.size == len(gripper.qs):
@@ -85,13 +84,13 @@ def main():
         stable_thresh=10.0,
     )
     stable_pos, stable_rotmat, *_ = stable_poses[0]
-    stable_pos = stable_pos + np.array([0.46, 0.0, 0.0], dtype=np.float32)
+    stable_pos = stable_pos + oum.vec(0.46, 0.0, 0.0).astype(oum.np.float32)
     bunny.set_rotmat_pos(rotmat=stable_rotmat, pos=stable_pos)
     bunny.rgb = (0.8, 0.7, 0.6)
     bunny.attach_to(base.scene)
     start_pose = (bunny.pos.copy(), bunny.rotmat.copy())
 
-    target_pos = bunny.pos + np.array([0.08, 0.0, 0.0], dtype=np.float32)
+    target_pos = bunny.pos + oum.vec(0.08, 0.0, 0.0).astype(oum.np.float32)
     target_rotmat = bunny.rotmat.copy()
     target_marker = bunny.clone()
     target_marker.set_rotmat_pos(rotmat=target_rotmat, pos=target_pos)
@@ -147,6 +146,21 @@ def main():
     print(f'Path found with {len(state_list)} waypoints')
     print(f"{'=' * 60}")
     print(plan.qs_list)
+
+    tcp_trace = []
+    for qs in state_list:
+        robot_qs, gripper_qs = split_state(robot, gripper, qs)
+        robot.fk(qs=robot_qs)
+        apply_gripper_state(gripper, gripper_qs)
+        tcp_trace.append(gripper.gl_tcp_tf[:3, 3].copy())
+    if len(tcp_trace) >= 2:
+        segs = oum.np.stack([tcp_trace[:-1], tcp_trace[1:]], axis=1)
+        ossop.linsegs(
+            segs,
+            radius=0.002,
+            srgbs=oum.vec(0.1, 0.2, 0.9).astype(oum.np.float32),
+            alpha=0.45,
+        ).attach_to(base.scene)
 
     held = {'value': False}
     counter = {'idx': 0}

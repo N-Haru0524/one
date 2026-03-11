@@ -1,4 +1,4 @@
-import numpy as np
+import one.utils.math as oum
 import one.collider.mj_collider as ocm
 import one.motion.probabilistic.planning_context as omppc
 import one.motion.probabilistic.rrt as ompr
@@ -7,7 +7,7 @@ import one.motion.probabilistic.rrt as ompr
 class MotionData:
     def __init__(self, qs_list=None):
         self.qs_list = [] if qs_list is None else [
-            np.asarray(qs, dtype=np.float32) for qs in qs_list]
+            oum.np.asarray(qs, dtype=oum.np.float32) for qs in qs_list]
         self.events = {}
 
     def __len__(self):
@@ -19,7 +19,7 @@ class MotionData:
 
     def extend(self, qs_list):
         self.qs_list.extend(
-            np.asarray(qs, dtype=np.float32) for qs in qs_list)
+            oum.np.asarray(qs, dtype=oum.np.float32) for qs in qs_list)
 
     def copy(self):
         new = MotionData(self.qs_list)
@@ -42,7 +42,7 @@ def build_collider(actors, obstacles=None, aux_mecbas=None, margin=0.0):
     return collider
 
 
-def build_planning_context(collider, aux_mecbas=None, max_edge_step=np.pi / 180):
+def build_planning_context(collider, aux_mecbas=None, max_edge_step=oum.pi / 180):
     joint_limits = None
     actors = getattr(collider, 'actors', ())
     if actors:
@@ -54,12 +54,12 @@ def build_planning_context(collider, aux_mecbas=None, max_edge_step=np.pi / 180)
             ndof = getattr(actor, 'ndof', None)
             if compiled is None or ndof is None:
                 continue
-            lmt_low_list.append(np.asarray(compiled.jlmt_low_by_idx[:ndof], dtype=np.float32))
-            lmt_high_list.append(np.asarray(compiled.jlmt_high_by_idx[:ndof], dtype=np.float32))
+            lmt_low_list.append(oum.np.asarray(compiled.jlmt_low_by_idx[:ndof], dtype=oum.np.float32))
+            lmt_high_list.append(oum.np.asarray(compiled.jlmt_high_by_idx[:ndof], dtype=oum.np.float32))
         if lmt_low_list:
             joint_limits = (
-                np.concatenate(lmt_low_list).astype(np.float32),
-                np.concatenate(lmt_high_list).astype(np.float32),
+                oum.np.concatenate(lmt_low_list).astype(oum.np.float32),
+                oum.np.concatenate(lmt_high_list).astype(oum.np.float32),
             )
     return omppc.PlanningContext(
         collider=collider,
@@ -70,10 +70,10 @@ def build_planning_context(collider, aux_mecbas=None, max_edge_step=np.pi / 180)
 
 
 def plan_rrt(robot, start_qs, goal_qs, pln_ctx,
-             step_size=np.pi / 120,
+             step_size=oum.pi / 120,
              max_iters=2000,
              time_limit=None,
-             max_edge_step=np.pi / 180,
+             max_edge_step=oum.pi / 180,
              aux_mecbas=None):
     del robot
     del max_edge_step, aux_mecbas
@@ -85,17 +85,17 @@ def plan_rrt(robot, start_qs, goal_qs, pln_ctx,
                          max_iters=max_iters, time_limit=time_limit)
 
 
-def interpolate_qs(start_qs, goal_qs, step_size=np.pi / 36):
-    start_qs = np.asarray(start_qs, dtype=np.float32)
-    goal_qs = np.asarray(goal_qs, dtype=np.float32)
-    dist = float(np.linalg.norm(goal_qs - start_qs))
+def interpolate_qs(start_qs, goal_qs, step_size=oum.pi / 36):
+    start_qs = oum.np.asarray(start_qs, dtype=oum.np.float32)
+    goal_qs = oum.np.asarray(goal_qs, dtype=oum.np.float32)
+    dist = float(oum.np.linalg.norm(goal_qs - start_qs))
     if dist == 0.0:
         return [start_qs.copy()]
-    n_steps = max(1, int(np.ceil(dist / float(step_size))))
+    n_steps = max(1, int(oum.np.ceil(dist / float(step_size))))
     path = []
     for i in range(n_steps + 1):
         t = i / n_steps
-        path.append(((1.0 - t) * start_qs + t * goal_qs).astype(np.float32))
+        path.append(((1.0 - t) * start_qs + t * goal_qs).astype(oum.np.float32))
     return path
 
 
@@ -112,12 +112,12 @@ def path_is_valid(path, pln_ctx):
 
 def plan_joint_path(start_qs, goal_qs, pln_ctx,
                     use_rrt=True,
-                    step_size=np.pi / 36,
+                    step_size=oum.pi / 36,
                     max_iters=2000,
                     time_limit=None,
-                    max_edge_step=np.pi / 180):
-    start_qs = np.asarray(start_qs, dtype=np.float32)
-    goal_qs = np.asarray(goal_qs, dtype=np.float32)
+                    max_edge_step=oum.pi / 180):
+    start_qs = oum.np.asarray(start_qs, dtype=oum.np.float32)
+    goal_qs = oum.np.asarray(goal_qs, dtype=oum.np.float32)
     if use_rrt:
         return plan_rrt(
             None,
@@ -138,7 +138,7 @@ def plan_joint_path(start_qs, goal_qs, pln_ctx,
 def select_ik_solution(solutions, ref_qs):
     if not solutions:
         return None
-    ref_qs = np.asarray(ref_qs, dtype=np.float32)
-    candidates = [np.asarray(qs, dtype=np.float32) for qs in solutions]
-    dists = [np.linalg.norm(qs - ref_qs) for qs in candidates]
-    return candidates[int(np.argmin(dists))]
+    ref_qs = oum.np.asarray(ref_qs, dtype=oum.np.float32)
+    candidates = [oum.np.asarray(qs, dtype=oum.np.float32) for qs in solutions]
+    dists = [oum.np.linalg.norm(qs - ref_qs) for qs in candidates]
+    return candidates[int(oum.np.argmin(dists))]
