@@ -189,10 +189,10 @@ def linsegs(segs, radius=0.001, srgbs=None, alpha=1.0):
     for i in range(n):
         a = segs[i, 0]
         b = segs[i, 1]
-        if np.linalg.norm(b - a) < 1e-12:
-            continue
         length, dir_vec = oum.unit_vec(
             b - a, return_length=True)
+        if float(length) <= oum.eps:
+            continue
         rotmat = oum.rotmat_between_vecs(
             ouc.StandardAxis.Z, dir_vec)
         rmodel = osrmp.gen_cylinder_rmodel(
