@@ -301,6 +301,19 @@ class ADPlanner:
         )
         if path is None:
             return None
+        path = [oum.np.asarray(qs, dtype=oum.np.float32) for qs in path]
+        expected_start = self._compose_state(*self._split_state(start_qs, ee_values=ee_values))
+        expected_goal = self._compose_state(*self._split_state(goal_qs, ee_values=ee_values))
+        forward_error = (
+            pln_ctx.distance(path[0], expected_start) +
+            pln_ctx.distance(path[-1], expected_goal)
+        )
+        reverse_error = (
+            pln_ctx.distance(path[0], expected_goal) +
+            pln_ctx.distance(path[-1], expected_start)
+        )
+        if reverse_error < forward_error:
+            path = list(reversed(path))
         return self._motion_plan(path)
 
     def _merge_plans(self, first, second):

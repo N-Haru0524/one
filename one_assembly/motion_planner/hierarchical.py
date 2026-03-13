@@ -25,6 +25,24 @@ class HierarchicalPlannerBase(ADPlanner):
         super().__init__(robot=robot, pln_ctx=pln_ctx, ee_actor=ee_actor)
         self._filtered_pln_ctx_cache = {}
 
+    def _grasp_fields(self, grasp):
+        if not isinstance(grasp, (tuple, list)) or len(grasp) < 4:
+            raise ValueError('grasp must be a tuple like (pose_tf, pre_pose_tf, jaw_width, score)')
+        pose_tf = oum.np.asarray(grasp[0], dtype=oum.np.float32)
+        pre_pose_tf = oum.np.asarray(grasp[1], dtype=oum.np.float32)
+        jaw_width = float(oum.np.asarray(grasp[2], dtype=oum.np.float32).reshape(-1)[0])
+        score = float(grasp[3])
+        if pose_tf.shape != (4, 4):
+            raise ValueError('grasp pose_tf must be a (4, 4) transform')
+        if pre_pose_tf.shape != (4, 4):
+            raise ValueError('grasp pre_pose_tf must be a (4, 4) transform')
+        return pose_tf, pre_pose_tf, jaw_width, score
+
+    def _grasp_has_collision(self, grasp):
+        if not isinstance(grasp, (tuple, list)) or len(grasp) < 5:
+            return False
+        return bool(grasp[4])
+
     def _pose_to_tf(self, pose):
         if isinstance(pose, (tuple, list)) and len(pose) == 2:
             return oum.tf_from_rotmat_pos(pose[1], pose[0])
@@ -75,6 +93,65 @@ class HierarchicalPlannerBase(ADPlanner):
                 ee_actor.set_jaw_width(float(ee_value_arr.reshape(-1)[0]))
                 return oum.np.asarray(ee_actor.qs[:ee_actor.ndof], dtype=oum.np.float32)
         return self._resolve_ee_qs(ee_value_arr)
+
+    def _grasp_world_data(self, grasp, obj_pose):
+        obj_tf = self._pose_to_tf(obj_pose)
+        pose_tf, pre_pose_tf, jaw_width, score = self._grasp_fields(grasp)
+        pose_tf = obj_tf @ pose_tf
+        pre_pose_tf = obj_tf @ pre_pose_tf
+        ee_qs = self._resolve_goal_ee_qs(jaw_width)
+        return pose_tf, pre_pose_tf, ee_qs, jaw_width, score
+
+    def _grasp_pose(self, grasp, obj_pose):
+        pose_tf, _pre_pose_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose)
+        return pose_tf, ee_qs
+
+    def _grasp_pre_pose(self, grasp, obj_pose):
+        _pose_tf, pre_pose_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose)
+        return pre_pose_tf, ee_qs
+
+    def _max_open_ee_qs(self):
+        if self.ee_actor is None:
+            return None
+        if hasattr(self.ee_actor, 'set_jaw_width') and hasattr(self.ee_actor, 'jaw_range'):
+            ee_actor = self.ee_actor.clone()
+            ee_actor.set_jaw_width(float(oum.np.asarray(ee_actor.jaw_range, dtype=oum.np.float32)[1]))
+            return oum.np.asarray(ee_actor.qs[:ee_actor.ndof], dtype=oum.np.float32)
+        return self._default_ee_qs()
+
+    def _compose_with_ee_qs(self, qs, ee_qs):
+        robot_qs, _ = self._split_state(qs, ee_values=ee_qs)
+        return self._compose_state(robot_qs, ee_qs)
+
+    def _mounted_ee_actor(self, robot_clone):
+        if self.ee_actor is None:
+            return None
+        for mounting in robot_clone._mountings.values():
+            if isinstance(mounting.child, type(self.ee_actor)):
+                return mounting.child
+        return None
+
+    def _hold_pln_ctx(self, obj_model, grasp, pick_pose, exclude_entities=None):
+        if self.ee_actor is None:
+            return self._filtered_pln_ctx(exclude_entities=exclude_entities)
+        if obj_model is None or not hasattr(obj_model, 'clone'):
+            return self._filtered_pln_ctx(exclude_entities=exclude_entities)
+        robot_clone = self.robot.clone()
+        ee_clone = self._mounted_ee_actor(robot_clone)
+        if ee_clone is None:
+            raise RuntimeError('Failed to locate mounted end effector clone for hold planning context')
+        pick_tf = self._pose_to_tf(pick_pose)
+        obj_clone = obj_model.clone()
+        obj_clone.set_rotmat_pos(rotmat=pick_tf[:3, :3], pos=pick_tf[:3, 3])
+        pose_tf, _pre_pose_tf, _ee_qs, jaw_width, _score = self._grasp_world_data(grasp, obj_pose=pick_pose)
+        ee_clone.grip_at(pose_tf[:3, 3], pose_tf[:3, :3], jaw_width)
+        ee_clone.grasp(obj_clone, jaw_width=jaw_width)
+        desired_actors = [robot_clone, ee_clone]
+        excluded = [] if exclude_entities is None else list(exclude_entities)
+        excluded.extend(self._desired_actors())
+        excluded.append(obj_model)
+        collider = utils.build_collider(desired_actors, obstacles=self._scene_entities(excluded))
+        return utils.build_planning_context(collider, max_edge_step=self.pln_ctx.cd_step_size)
 
     def _pose_error(self, src_tf, dst_tf):
         pos_err = float(oum.np.linalg.norm(src_tf[:3, 3] - dst_tf[:3, 3]))

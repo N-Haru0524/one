@@ -5,49 +5,8 @@ from . import utils
 
 
 class PickPlacePlanner(HierarchicalPlannerBase):
-    def _grasp_fields(self, grasp):
-        if not isinstance(grasp, (tuple, list)) or len(grasp) < 4:
-            raise ValueError('grasp must be a tuple like (pose_tf, pre_pose_tf, jaw_width, score)')
-        pose_tf = oum.np.asarray(grasp[0], dtype=oum.np.float32)
-        pre_pose_tf = oum.np.asarray(grasp[1], dtype=oum.np.float32)
-        jaw_width = float(oum.np.asarray(grasp[2], dtype=oum.np.float32).reshape(-1)[0])
-        score = float(grasp[3])
-        if pose_tf.shape != (4, 4):
-            raise ValueError('grasp pose_tf must be a (4, 4) transform')
-        if pre_pose_tf.shape != (4, 4):
-            raise ValueError('grasp pre_pose_tf must be a (4, 4) transform')
-        return pose_tf, pre_pose_tf, jaw_width, score
-
-    def _grasp_world_data(self, grasp, obj_pose):
-        obj_tf = self._pose_to_tf(obj_pose)
-        pose_tf, pre_pose_tf, jaw_width, score = self._grasp_fields(grasp)
-        pose_tf = obj_tf @ pose_tf
-        pre_pose_tf = obj_tf @ pre_pose_tf
-        ee_qs = self._resolve_goal_ee_qs(jaw_width)
-        return pose_tf, pre_pose_tf, ee_qs, jaw_width, score
-
-    def _grasp_pose(self, grasp, obj_pose):
-        pose_tf, _pre_pose_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose)
-        return pose_tf, ee_qs
-
-    def _grasp_pre_pose(self, grasp, obj_pose):
-        _pose_tf, pre_pose_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose)
-        return pre_pose_tf, ee_qs
-
-    def _max_open_ee_qs(self):
-        if self.ee_actor is None:
-            return None
-        if hasattr(self.ee_actor, 'set_jaw_width') and hasattr(self.ee_actor, 'jaw_range'):
-            ee_actor = self.ee_actor.clone()
-            ee_actor.set_jaw_width(float(oum.np.asarray(ee_actor.jaw_range, dtype=oum.np.float32)[1]))
-            return oum.np.asarray(ee_actor.qs[:ee_actor.ndof], dtype=oum.np.float32)
-        return self._default_ee_qs()
-
-    def _compose_with_ee_qs(self, qs, ee_qs):
-        robot_qs, _ = self._split_state(qs, ee_values=ee_qs)
-        return self._compose_state(robot_qs, ee_qs)
-
     def reason_common_grasp_ids(self,
+                                obj_model,
                                 grasp_collection,
                                 goal_pose_list,
                                 pick_pose=None,
@@ -55,11 +14,24 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                                 exclude_entities=None,
                                 toggle_dbg=False):
         available_ids = list(range(len(grasp_collection)))
-        plan_pln_ctx = self._filtered_pln_ctx(exclude_entities=exclude_entities)
+        pick_exclude_entities = [] if exclude_entities is None else list(exclude_entities)
+        pick_exclude_entities.append(obj_model)
+        pick_pln_ctx = self._filtered_pln_ctx(exclude_entities=pick_exclude_entities)
+        hold_ctx_cache = {}
         self._last_reason_common_grasp_report = {
             'survived_gids': [],
             'failures': {},
         }
+        collision_free_ids = []
+        for gid in available_ids:
+            if self._grasp_has_collision(grasp_collection[gid]):
+                self._last_reason_common_grasp_report['failures'][gid] = {
+                    'label': 'grasp',
+                    'reason': 'grasp_collision',
+                }
+                continue
+            collision_free_ids.append(gid)
+        available_ids = collision_free_ids
 
         def classify_reason(stats):
             if stats['rejected_no_ik']:
@@ -68,68 +40,115 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 return 'goal_in_collision'
             return 'unknown'
 
-        def build_pose_entries(label, obj_pose, use_pick_pose=False):
-            pose_entries = []
-            open_ee_qs = self._max_open_ee_qs()
-            for gid in available_ids:
-                if label.endswith('approach_start'):
-                    tcp_tf, _ee_qs = self._grasp_pre_pose(
-                        grasp_collection[gid],
-                        obj_pose=pick_pose if use_pick_pose else obj_pose,
-                    )
-                    ee_qs = open_ee_qs
-                elif use_pick_pose:
-                    tcp_tf, ee_qs = self._grasp_pose(grasp_collection[gid], obj_pose=pick_pose)
-                else:
-                    if pick_pose is None:
-                        raise ValueError('pick_pose is required for place grasp reasoning')
-                    tcp_tf, ee_qs = self._grasp_pose(grasp_collection[gid], obj_pose=obj_pose)
-                pose_entries.append((gid, tcp_tf, ee_qs))
-            return label, pose_entries
+        def hold_pln_ctx_for_gid(gid):
+            return hold_ctx_cache.setdefault(
+                gid,
+                self._hold_pln_ctx(
+                    obj_model=obj_model,
+                    grasp=grasp_collection[gid],
+                    pick_pose=pick_pose,
+                    exclude_entities=exclude_entities,
+                ),
+            )
 
-        endpoint_checks = []
+        def record_failure(gid, label, reason, tcp_tf):
+            self._last_reason_common_grasp_report['failures'].setdefault(
+                gid,
+                {
+                    'label': label,
+                    'reason': reason,
+                    'tcp_pos': tcp_tf[:3, 3].copy(),
+                    'tcp_rotmat': tcp_tf[:3, :3].copy(),
+                },
+            )
+            if toggle_dbg:
+                pos = oum.np.array2string(tcp_tf[:3, 3], precision=4)
+                print(f'[pickplace_reason gid={gid}] label={label}, reason={reason}, tcp_pos={pos}')
+
+        ref_qs_map = {gid: self.robot.qs.copy() for gid in available_ids}
+        open_ee_qs = self._max_open_ee_qs()
         if pick_pose is not None:
-            endpoint_checks.append(build_pose_entries(
-                'pick_approach_start',
-                pick_pose,
-                use_pick_pose=True,
-            ))
-            endpoint_checks.append(build_pose_entries('pick_goal', pick_pose, use_pick_pose=True))
-        for goal_idx, goal_pose in enumerate(goal_pose_list):
-            endpoint_checks.append(build_pose_entries(
-                f'place_{goal_idx}_approach_start',
-                goal_pose,
-            ))
-            endpoint_checks.append(build_pose_entries(f'place_{goal_idx}_goal', goal_pose))
+            approach_entries = []
+            for gid in available_ids:
+                tcp_tf, _ee_qs = self._grasp_pre_pose(grasp_collection[gid], obj_pose=pick_pose)
+                approach_entries.append((gid, tcp_tf, open_ee_qs))
+            approach_records = self._screen_pose_list(
+                approach_entries,
+                pln_ctx=pick_pln_ctx,
+                linear_granularity=linear_granularity,
+                ref_qs=self.robot.qs.copy(),
+                toggle_dbg=toggle_dbg,
+                debug_label='pickplace_reason pick_approach_start',
+            )
+            available_ids = [record.key for record in approach_records]
+            ref_qs_map = {record.key: record.screen_result.goal_qs[:self.robot.ndof].copy() for record in approach_records}
+            survived_set = set(available_ids)
+            for gid, tcp_tf, _ee_qs in approach_entries:
+                if gid not in survived_set:
+                    record_failure(gid, 'pick_approach_start', 'unreachable_approach', tcp_tf)
+            if not available_ids:
+                self._last_reason_common_grasp_report['survived_gids'] = []
+                return []
 
-        for label, pose_entries in endpoint_checks:
             next_available_ids = []
-            for gid, tcp_tf, ee_qs in pose_entries:
+            next_ref_qs_map = {}
+            for gid in available_ids:
+                tcp_tf, ee_qs = self._grasp_pose(grasp_collection[gid], obj_pose=pick_pose)
                 result, stats = self._screen_pose_with_stats(
                     tcp_pos=tcp_tf[:3, 3],
                     tcp_rotmat=tcp_tf[:3, :3],
                     ee_qs=ee_qs,
-                    pln_ctx=plan_pln_ctx,
+                    pln_ctx=pick_pln_ctx,
                     linear_granularity=linear_granularity,
-                    ref_qs=self.robot.qs.copy(),
+                    ref_qs=ref_qs_map[gid],
                 )
                 if result is None:
-                    reason = classify_reason(stats)
-                    self._last_reason_common_grasp_report['failures'].setdefault(
-                        gid,
-                        {
-                            'label': label,
-                            'reason': reason,
-                            'tcp_pos': tcp_tf[:3, 3].copy(),
-                            'tcp_rotmat': tcp_tf[:3, :3].copy(),
-                        },
-                    )
-                    if toggle_dbg:
-                        pos = oum.np.array2string(tcp_tf[:3, 3], precision=4)
-                        print(f'[pickplace_reason gid={gid}] label={label}, reason={reason}, tcp_pos={pos}')
+                    record_failure(gid, 'pick_goal', classify_reason(stats), tcp_tf)
                     continue
                 next_available_ids.append(gid)
+                next_ref_qs_map[gid] = result.goal_qs[:self.robot.ndof].copy()
             available_ids = next_available_ids
+            ref_qs_map = next_ref_qs_map
+            if not available_ids:
+                self._last_reason_common_grasp_report['survived_gids'] = []
+                return []
+
+        for goal_idx, goal_pose in enumerate(goal_pose_list):
+            if pick_pose is None:
+                raise ValueError('pick_pose is required for place grasp reasoning')
+            next_available_ids = []
+            next_ref_qs_map = {}
+            approach_label = f'place_{goal_idx}_approach_start'
+            goal_label = f'place_{goal_idx}_goal'
+            for gid in available_ids:
+                pre_tf, pre_ee_qs = self._grasp_pre_pose(grasp_collection[gid], obj_pose=goal_pose)
+                pre_result, pre_stats = self._screen_pose_with_stats(
+                    tcp_pos=pre_tf[:3, 3],
+                    tcp_rotmat=pre_tf[:3, :3],
+                    ee_qs=pre_ee_qs,
+                    pln_ctx=hold_pln_ctx_for_gid(gid),
+                    linear_granularity=linear_granularity,
+                    ref_qs=ref_qs_map[gid],
+                )
+                if pre_result is None:
+                    record_failure(gid, approach_label, classify_reason(pre_stats), pre_tf)
+                    continue
+                goal_tf, ee_qs = self._grasp_pose(grasp_collection[gid], obj_pose=goal_pose)
+                goal_result, goal_stats = self._screen_pose_with_stats(
+                    tcp_pos=goal_tf[:3, 3],
+                    tcp_rotmat=goal_tf[:3, :3],
+                    ee_qs=ee_qs,
+                    pln_ctx=hold_pln_ctx_for_gid(gid),
+                    linear_granularity=linear_granularity,
+                    ref_qs=pre_result.goal_qs[:self.robot.ndof],
+                )
+                if goal_result is None:
+                    record_failure(gid, goal_label, classify_reason(goal_stats), goal_tf)
+                    continue
+                next_available_ids.append(gid)
+                next_ref_qs_map[gid] = goal_result.goal_qs[:self.robot.ndof].copy()
+            available_ids = next_available_ids
+            ref_qs_map = next_ref_qs_map
             if not available_ids:
                 break
         self._last_reason_common_grasp_report['survived_gids'] = available_ids.copy()
@@ -144,9 +163,19 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                             linear_granularity=0.03,
                             use_rrt=True,
                             toggle_dbg=False):
+        if self._grasp_has_collision(grasp):
+            if toggle_dbg:
+                print(f'[pickmove_pick gid={gid}] skipped grasp_collision=1')
+            return None
         if start_qs is None:
             start_qs = self.robot.qs.copy()
         open_ee_qs = self._max_open_ee_qs()
+        pick_pln_ctx = self._filtered_pln_ctx(exclude_entities=[obj_model])
+        hold_pln_ctx = self._hold_pln_ctx(
+            obj_model=obj_model,
+            grasp=grasp,
+            pick_pose=oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos),
+        )
 
         obj_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
         pick_tf, pick_pre_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose=obj_pose_tf)
@@ -154,7 +183,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             tcp_pos=pick_tf[:3, 3],
             tcp_rotmat=pick_tf[:3, :3],
             ee_qs=ee_qs,
-            pln_ctx=self.pln_ctx,
+            pln_ctx=pick_pln_ctx,
             linear_granularity=linear_granularity,
             ref_qs=start_qs,
         )
@@ -176,7 +205,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             final_ee_qs=ee_qs,
             start_qs=current_state,
             linear_granularity=linear_granularity,
-            pln_ctx=self.pln_ctx,
+            pln_ctx=pick_pln_ctx,
             use_rrt=use_rrt,
         )
         if pick_plan is None:
@@ -201,7 +230,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 tcp_pos=goal_tf[:3, 3],
                 tcp_rotmat=goal_tf[:3, :3],
                 ee_qs=ee_qs,
-                pln_ctx=self.pln_ctx,
+                pln_ctx=hold_pln_ctx,
                 ref_qs=current_state[:self.robot.ndof],
             )
             if goal_result is None:
@@ -216,7 +245,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 final_ee_qs=ee_qs,
                 start_qs=current_state,
                 linear_granularity=linear_granularity,
-                pln_ctx=self.pln_ctx,
+                pln_ctx=hold_pln_ctx,
                 use_rrt=use_rrt,
             )
             if goal_plan is None:
@@ -256,6 +285,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
         obj_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
         if reason_grasps:
             common_gids = self.reason_common_grasp_ids(
+                obj_model=obj_model,
                 grasp_collection=grasp_collection,
                 goal_pose_list=goal_pose_list,
                 pick_pose=obj_pose_tf,
@@ -263,7 +293,10 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 toggle_dbg=toggle_dbg,
             )
         else:
-            common_gids = list(range(len(grasp_collection)))
+            common_gids = [
+                gid for gid, grasp in enumerate(grasp_collection)
+                if not self._grasp_has_collision(grasp)
+            ]
         if not common_gids:
             if toggle_dbg:
                 print('[pickplace] no common grasp ids after reasoning')

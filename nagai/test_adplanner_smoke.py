@@ -17,6 +17,7 @@ PLANNER_PATH = ROOT / 'one_assembly' / 'motion_planner' / 'approach_depart_plann
 HIER_PATH = ROOT / 'one_assembly' / 'motion_planner' / 'hierarchical.py'
 PP_PATH = ROOT / 'one_assembly' / 'motion_planner' / 'ppplanner.py'
 SCREW_PATH = ROOT / 'one_assembly' / 'motion_planner' / 'screwplanner.py'
+FOLD_PATH = ROOT / 'one_assembly' / 'motion_planner' / 'foldplanner.py'
 
 
 def _reset_modules():
@@ -169,6 +170,26 @@ def fake_rotmat_from_axangle(ax, angle):
     ], dtype=oum.np.float32)
 
 
+def fake_quat_from_rotmat(rotmat):
+    return oum.quat_from_rotmat(rotmat)
+
+
+def fake_rotmat_from_quat(quat):
+    return oum.rotmat_from_quat(quat).astype(oum.np.float32)
+
+
+def fake_slerp_quat(quat0, quat1, fraction, spin=0, shortestpath=True):
+    return oum.slerp_quat(quat0, quat1, fraction, spin=spin, shortestpath=shortestpath)
+
+
+def fake_axangle_between_rotmat(rotmati, rotmatj):
+    return oum.axangle_between_rotmat(rotmati, rotmatj)
+
+
+def fake_rotmat_slerp(rotmat0, rotmat1, n):
+    return oum.rotmat_slerp(rotmat0, rotmat1, n).astype(oum.np.float32)
+
+
 class FakeRobot:
     clone_count = 0
 
@@ -235,6 +256,11 @@ def load_modules():
     oum_mod.tf_from_rotmat_pos = fake_tf_from_rotmat_pos
     oum_mod.orth_vec = fake_orth_vec
     oum_mod.rotmat_from_axangle = fake_rotmat_from_axangle
+    oum_mod.quat_from_rotmat = fake_quat_from_rotmat
+    oum_mod.rotmat_from_quat = fake_rotmat_from_quat
+    oum_mod.slerp_quat = fake_slerp_quat
+    oum_mod.axangle_between_rotmat = fake_axangle_between_rotmat
+    oum_mod.rotmat_slerp = fake_rotmat_slerp
     oum_mod.np = oum.np
     oum_mod.pi = oum.pi
     sys.modules[oum_mod.__name__] = oum_mod
@@ -244,6 +270,11 @@ def load_modules():
     utils_math_mod.tf_from_rotmat_pos = fake_tf_from_rotmat_pos
     utils_math_mod.orth_vec = fake_orth_vec
     utils_math_mod.rotmat_from_axangle = fake_rotmat_from_axangle
+    utils_math_mod.quat_from_rotmat = fake_quat_from_rotmat
+    utils_math_mod.rotmat_from_quat = fake_rotmat_from_quat
+    utils_math_mod.slerp_quat = fake_slerp_quat
+    utils_math_mod.axangle_between_rotmat = fake_axangle_between_rotmat
+    utils_math_mod.rotmat_slerp = fake_rotmat_slerp
     utils_math_mod.np = oum.np
     utils_math_mod.pi = oum.pi
     sys.modules[utils_math_mod.__name__] = utils_math_mod
@@ -308,7 +339,15 @@ def load_modules():
     screw_mod = importlib.util.module_from_spec(screw_spec)
     sys.modules[screw_spec.name] = screw_mod
     screw_spec.loader.exec_module(screw_mod)
-    return utils_mod, planner_mod, pp_mod, screw_mod
+
+    fold_spec = importlib.util.spec_from_file_location(
+        'one_assembly.motion_planner.foldplanner',
+        FOLD_PATH,
+    )
+    fold_mod = importlib.util.module_from_spec(fold_spec)
+    sys.modules[fold_spec.name] = fold_mod
+    fold_spec.loader.exec_module(fold_mod)
+    return utils_mod, planner_mod, pp_mod, screw_mod, fold_mod
 
 
 class ADPlannerSmokeTest(unittest.TestCase):
@@ -320,7 +359,7 @@ class ADPlannerSmokeTest(unittest.TestCase):
         return pose_tf, pre_pose_tf, float(jaw_width), 1.0
 
     def setUp(self):
-        self.utils_mod, self.planner_mod, self.pp_mod, self.screw_mod = load_modules()
+        self.utils_mod, self.planner_mod, self.pp_mod, self.screw_mod, self.fold_mod = load_modules()
         FakeRobot.clone_count = 0
         self.robot = FakeRobot()
         self.ee_actor = FakeEEActor()
@@ -346,6 +385,76 @@ class ADPlannerSmokeTest(unittest.TestCase):
         oum.np.testing.assert_allclose(plan.qs_list[0], [0.3, 0.0, -0.1, 0.01, 0.01], atol=1e-6)
         oum.np.testing.assert_allclose(plan.qs_list[-1], [0.3, 0.0, 0.0, 0.01, 0.01], atol=1e-6)
 
+    def test_interpolated_linear_motion_generates_motion_plan(self):
+        planner = self.fold_mod.FoldPlanner(self.robot, pln_ctx=self.pln_ctx, ee_actor=self.ee_actor)
+        plan = planner.gen_linear_motion(
+            start_tcp_pos=oum.vec(0.0, 0.0, 0.0).astype(oum.np.float32),
+            start_tcp_rotmat=oum.np.eye(3, dtype=oum.np.float32),
+            goal_tcp_pos=oum.vec(0.2, 0.0, 0.0).astype(oum.np.float32),
+            goal_tcp_rotmat=oum.np.eye(3, dtype=oum.np.float32),
+            granularity=0.05,
+            ee_values=oum.np.array([0.01, 0.01], dtype=oum.np.float32),
+        )
+        self.assertIsNotNone(plan)
+        self.assertGreaterEqual(len(plan.qs_list), 2)
+        oum.np.testing.assert_allclose(plan.qs_list[0], [0.0, 0.0, 0.0, 0.01, 0.01], atol=1e-6)
+        oum.np.testing.assert_allclose(plan.qs_list[-1], [0.2, 0.0, 0.0, 0.01, 0.01], atol=1e-6)
+
+    def test_interpolated_piecewise_motion_connects_all_waypoints(self):
+        planner = self.fold_mod.FoldPlanner(self.robot, pln_ctx=self.pln_ctx, ee_actor=self.ee_actor)
+        plan = planner.gen_piecewise_motion(
+            start_tcp_pos=oum.vec(0.0, 0.0, 0.0).astype(oum.np.float32),
+            start_tcp_rotmat=oum.np.eye(3, dtype=oum.np.float32),
+            goal_tcp_pos_list=[
+                oum.vec(0.1, 0.0, 0.0).astype(oum.np.float32),
+                oum.vec(0.2, 0.1, 0.0).astype(oum.np.float32),
+            ],
+            goal_tcp_rotmat_list=[
+                oum.np.eye(3, dtype=oum.np.float32),
+                oum.np.eye(3, dtype=oum.np.float32),
+            ],
+            granularity=0.05,
+            ee_values=oum.np.array([0.02, 0.02], dtype=oum.np.float32),
+        )
+        self.assertIsNotNone(plan)
+        oum.np.testing.assert_allclose(plan.qs_list[-1], [0.2, 0.1, 0.0, 0.02, 0.02], atol=1e-6)
+
+    def test_interpolated_piecewise_motion_starts_from_seed_qs(self):
+        planner = self.fold_mod.FoldPlanner(self.robot, pln_ctx=self.pln_ctx, ee_actor=self.ee_actor)
+        plan = planner.gen_piecewise_motion(
+            start_tcp_pos=oum.vec(0.0, 0.0, 0.0).astype(oum.np.float32),
+            start_tcp_rotmat=oum.np.eye(3, dtype=oum.np.float32),
+            goal_tcp_pos_list=[oum.vec(0.1, 0.0, 0.0).astype(oum.np.float32)],
+            goal_tcp_rotmat_list=[oum.np.eye(3, dtype=oum.np.float32)],
+            granularity=0.05,
+            ee_values=oum.np.array([0.02, 0.02], dtype=oum.np.float32),
+            ref_qs=oum.np.array([0.8, 0.1, -0.2], dtype=oum.np.float32),
+        )
+        self.assertIsNotNone(plan)
+        oum.np.testing.assert_allclose(plan.qs_list[0], [0.8, 0.1, -0.2, 0.02, 0.02], atol=1e-6)
+
+    def test_interpolated_piecewise_motion_uses_given_ref_qs(self):
+        planner = self.fold_mod.FoldPlanner(self.robot, pln_ctx=self.pln_ctx, ee_actor=self.ee_actor)
+        captured = {}
+        original_cartesian = self.fold_mod.omtc.cartesian_to_jtraj
+
+        def record_cartesian_to_jtraj(*args, **kwargs):
+            if 'first_ref_qs' not in captured:
+                captured['first_ref_qs'] = oum.np.asarray(kwargs['ref_qs'], dtype=oum.np.float32).copy()
+            return original_cartesian(*args, **kwargs)
+
+        self.fold_mod.omtc.cartesian_to_jtraj = record_cartesian_to_jtraj
+        planner.gen_piecewise_motion(
+            start_tcp_pos=oum.vec(0.0, 0.0, 0.0).astype(oum.np.float32),
+            start_tcp_rotmat=oum.np.eye(3, dtype=oum.np.float32),
+            goal_tcp_pos_list=[oum.vec(0.1, 0.0, 0.0).astype(oum.np.float32)],
+            goal_tcp_rotmat_list=[oum.np.eye(3, dtype=oum.np.float32)],
+            granularity=0.05,
+            ref_qs=oum.np.array([0.8, 0.1, -0.2], dtype=oum.np.float32),
+        )
+        self.fold_mod.omtc.cartesian_to_jtraj = original_cartesian
+        oum.np.testing.assert_allclose(captured['first_ref_qs'], [0.8, 0.1, -0.2], atol=1e-6)
+
     def test_approach_depart_runs_end_to_end(self):
         plan = self.planner.gen_approach_depart(
             goal_qs=oum.np.array([0.3, 0.0, 0.0, 0.02, 0.02], dtype=oum.np.float32),
@@ -361,6 +470,30 @@ class ADPlannerSmokeTest(unittest.TestCase):
         self.assertIsNotNone(plan)
         oum.np.testing.assert_allclose(plan.qs_list[0], [0.0, 0.0, 0.0, 0.04, 0.04], atol=1e-6)
         oum.np.testing.assert_allclose(plan.qs_list[-1], [0.5, 0.2, 0.0, 0.01, 0.01], atol=1e-6)
+
+    def test_connect_motion_reorients_reversed_path(self):
+        planner = self.planner_mod.ADPlanner(
+            robot=self.robot,
+            pln_ctx=self.pln_ctx,
+            ee_actor=self.ee_actor,
+        )
+        original_plan_joint_path = self.utils_mod.plan_joint_path
+
+        def reversed_plan_joint_path(*args, **kwargs):
+            path = original_plan_joint_path(*args, **kwargs)
+            return list(reversed(path))
+
+        self.utils_mod.plan_joint_path = reversed_plan_joint_path
+        plan = planner._connect_motion(
+            start_qs=oum.np.array([0.0, 0.0, 0.0, 0.01, 0.01], dtype=oum.np.float32),
+            goal_qs=oum.np.array([0.2, 0.0, 0.0, 0.01, 0.01], dtype=oum.np.float32),
+            pln_ctx=self.pln_ctx,
+            use_rrt=False,
+        )
+        self.utils_mod.plan_joint_path = original_plan_joint_path
+        self.assertIsNotNone(plan)
+        oum.np.testing.assert_allclose(plan.qs_list[0], [0.0, 0.0, 0.0, 0.01, 0.01], atol=1e-6)
+        oum.np.testing.assert_allclose(plan.qs_list[-1], [0.2, 0.0, 0.0, 0.01, 0.01], atol=1e-6)
 
     def test_utils_build_collider_includes_aux_mecbas(self):
         aux_actor = object()
@@ -541,6 +674,63 @@ class ADPlannerSmokeTest(unittest.TestCase):
         )
         self.assertIsNotNone(plan)
         self.assertEqual(screen_calls['count'], 6)
+
+    def test_fold_reason_common_grasp_ids_uses_unified_collider(self):
+        grasp0 = self._make_grasp([0.1, 0.0, 0.0])
+        grasp1 = self._make_grasp([0.3, 0.0, 0.0])
+        collider = self.utils_mod.build_collider([self.robot, self.ee_actor])
+        collider.collision_predicate = lambda qs: bool(oum.np.asarray(qs, dtype=oum.np.float32)[0] < 0.2)
+        planner = self.fold_mod.FoldPlanner(
+            self.robot,
+            pln_ctx=self.utils_mod.build_planning_context(collider),
+            ee_actor=self.ee_actor,
+        )
+        self.robot.ik_tcp = lambda tgt_rotmat, tgt_pos: [oum.np.asarray(tgt_pos, dtype=oum.np.float32)]
+        obj = types.SimpleNamespace(
+            pos=oum.np.zeros(3, dtype=oum.np.float32),
+            rotmat=oum.np.eye(3, dtype=oum.np.float32),
+        )
+        common_gids = planner.reason_common_grasp_ids(
+            obj_model=obj,
+            grasp_collection=[grasp0, grasp1],
+            goal_pose_list=[(oum.np.zeros(3, dtype=oum.np.float32), oum.np.eye(3, dtype=oum.np.float32))],
+            pick_pose=(oum.np.zeros(3, dtype=oum.np.float32), oum.np.eye(3, dtype=oum.np.float32)),
+        )
+        self.assertEqual(common_gids, [1])
+
+    def test_fold_gen_pick_and_fold_records_attach_and_gid(self):
+        planner = self.fold_mod.FoldPlanner(self.robot, pln_ctx=self.pln_ctx, ee_actor=self.ee_actor)
+        obj = types.SimpleNamespace(
+            pos=oum.np.zeros(3, dtype=oum.np.float32),
+            rotmat=oum.np.eye(3, dtype=oum.np.float32),
+        )
+        grasp = self._make_grasp([0.3, 0.0, 0.0])
+        plan = planner.gen_pick_and_fold(
+            obj_model=obj,
+            grasp_collection=[grasp],
+            goal_pose_list=[
+                (oum.np.zeros(3, dtype=oum.np.float32), oum.np.eye(3, dtype=oum.np.float32)),
+                (oum.vec(0.1, 0.1, 0.0).astype(oum.np.float32), oum.np.eye(3, dtype=oum.np.float32)),
+            ],
+            linear_granularity=0.05,
+            reason_grasps=True,
+            use_rrt=False,
+        )
+        self.assertIsNotNone(plan)
+        self.assertIn('attach', plan.events)
+        self.assertEqual(plan.events['gid'], 0)
+        self.assertGreater(len(plan.qs_list), 2)
+
+    def test_interpolate_fold_returns_requested_resolution(self):
+        start_pose = (oum.np.zeros(3, dtype=oum.np.float32), oum.np.eye(3, dtype=oum.np.float32))
+        goal_pose = (
+            oum.vec(0.0, 0.2, 0.0).astype(oum.np.float32),
+            oum.rotmat_from_axangle(oum.vec(0.0, 0.0, 1.0), oum.pi / 2.0),
+        )
+        poses = self.fold_mod.interpolate_fold(start_pose, goal_pose, n_steps=5)
+        self.assertEqual(len(poses), 5)
+        oum.np.testing.assert_allclose(poses[0][0], start_pose[0], atol=1e-6)
+        oum.np.testing.assert_allclose(poses[-1][0], goal_pose[0], atol=1e-5)
 
 
 if __name__ == '__main__':

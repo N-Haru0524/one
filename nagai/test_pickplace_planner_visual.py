@@ -15,22 +15,6 @@ from one_assembly.motion_planner import PickPlacePlanner, utils as omp_utils
 from one.grasp.antipodal import antipodal
 import one.utils.math as oum
 
-def bunny_top_grasp_collection(obj_pose_tf, jaw_width, z_offset=0.025):
-    grasp_collection = []
-    obj_pos = obj_pose_tf[:3, 3]
-    for yaw in (0.0, oum.pi * 0.5, oum.pi, oum.pi * 1.5):
-        tcp_rotmat = (
-            oum.rotmat_from_euler(0.0, oum.pi, 0.0) @
-            oum.rotmat_from_euler(0.0, 0.0, yaw)
-        ).astype(oum.np.float32)
-        tcp_pos = obj_pos + oum.vec(0.0, 0.0, z_offset).astype(oum.np.float32)
-        tcp_tf = oum.tf_from_rotmat_pos(tcp_rotmat, tcp_pos)
-        pre_pose_tf = tcp_tf.copy()
-        pre_pose_tf[:3, 3] += oum.vec(0.0, 0.0, 0.05).astype(oum.np.float32)
-        grasp_collection.append((tcp_tf, pre_pose_tf, float(jaw_width), 1.0))
-    return grasp_collection
-
-
 def split_state(robot, gripper, qs):
     robot_ndof = robot.ndof
     return qs[:robot_ndof], qs[robot_ndof:robot_ndof + gripper.ndof]
@@ -104,7 +88,7 @@ def main():
     collider.append(robot)
     collider.append(gripper)
     collider.append(table)
-    # collider.append(bunny)
+    collider.append(bunny)
     collider.actors = [robot, gripper]
     collider.compile(margin=0.0)
     pln_ctx = omp_utils.build_planning_context(collider)
