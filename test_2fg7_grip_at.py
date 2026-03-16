@@ -1,6 +1,7 @@
 import numpy as np
 import one.utils.math as oum
 from one import ovw, ossop, or_2fg7
+from one_assembly.robots.or_2fg7 import or_2fg7
 
 base = ovw.World(cam_pos=(.5, .5, .5), cam_lookat_pos=(0, 0, .2),
                  toggle_auto_cam_orbit=True)
