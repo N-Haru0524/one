@@ -114,6 +114,7 @@ class ScrewPlanner(HierarchicalPlannerBase):
                   depart_distance=0.07,
                   linear_granularity=0.03,
                   use_rrt=True,
+                  pln_jnt=False,
                   toggle_dbg=False):
         if start_qs is None:
             start_qs = self.robot.qs.copy()
@@ -152,6 +153,7 @@ class ScrewPlanner(HierarchicalPlannerBase):
                 linear_granularity=linear_granularity,
                 pln_ctx=self.pln_ctx,
                 use_rrt=use_rrt,
+                pln_jnt=pln_jnt,
             )
             if home_plan is None:
                 if toggle_dbg:
@@ -178,6 +180,7 @@ class ScrewPlanner(HierarchicalPlannerBase):
                 linear_granularity=linear_granularity,
                 pln_ctx=self.pln_ctx,
                 use_rrt=use_rrt,
+                pln_jnt=pln_jnt,
             )
             if plan is not None:
                 if prefix_plan is not None:

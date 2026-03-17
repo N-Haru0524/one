@@ -151,6 +151,7 @@ def main():
         depart_direction=oum.vec(0.0, 0.0, 1.0).astype(oum.np.float32),
         depart_distance=0.04,
         linear_granularity=0.01,
+        pln_jnt=True,
         use_rrt=True,
         toggle_dbg=True,
     )

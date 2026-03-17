@@ -111,6 +111,7 @@ def main():
         goal_pose_list=[(target_pos, target_rotmat)],
         linear_granularity=0.02,
         reason_grasps=True,
+        pln_jnt=True,
         use_rrt=True,
         toggle_dbg=True,
     )

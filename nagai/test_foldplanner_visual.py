@@ -226,6 +226,7 @@ def main():
         reason_grasps=not bool(common_gids),
         exclude_entities=[bunny],
         use_rrt=True,
+        pln_jnt=True,
         toggle_dbg=True,
     )
     t1 = time.time()

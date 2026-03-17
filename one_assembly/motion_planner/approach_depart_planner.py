@@ -111,6 +111,68 @@ class ADPlanner:
         q_list = [oum.np.asarray(qs, dtype=oum.np.float32) for qs in q_list]
         return utils.MotionData(q_list)
 
+    def _compose_start_state(self, start_qs, ee_values=None):
+        if start_qs is None:
+            return None
+        return self._compose_state(*self._split_state(start_qs, ee_values=ee_values))
+
+    def _solve_pose_state(self, pose_tf, ref_qs, ee_qs=None, pln_ctx=None, failure_stage='pose_ik'):
+        if pln_ctx is None:
+            pln_ctx = self.pln_ctx
+        pose_tf = oum.np.asarray(pose_tf, dtype=oum.np.float32)
+        ref_qs = oum.np.asarray(ref_qs, dtype=oum.np.float32)
+        goal_qs = self.robot.ik_tcp_nearest(
+            tgt_rotmat=pose_tf[:3, :3],
+            tgt_pos=pose_tf[:3, 3],
+            ref_qs=ref_qs,
+        )
+        if goal_qs is None:
+            self._set_last_plan_failure(failure_stage, 'goal_ik_failed')
+            return None
+        state = self._compose_state(goal_qs, ee_qs)
+        if not pln_ctx.is_state_valid(state):
+            self._set_last_plan_failure(failure_stage, 'goal_state_in_collision')
+            return None
+        return state
+
+    def _offset_pose_tf(self, goal_tcp_pos, goal_tcp_rotmat, direction=None, distance=0.07, motion_type='sink'):
+        goal_tcp_pos = oum.np.asarray(goal_tcp_pos, dtype=oum.np.float32)
+        goal_tcp_rotmat = oum.np.asarray(goal_tcp_rotmat, dtype=oum.np.float32)
+        direction = self._normalize_direction(goal_tcp_rotmat, direction)
+        offset = direction * float(distance)
+        pose_tf = oum.np.eye(4, dtype=oum.np.float32)
+        pose_tf[:3, :3] = goal_tcp_rotmat
+        if motion_type == 'sink':
+            pose_tf[:3, 3] = goal_tcp_pos - offset
+        elif motion_type == 'source':
+            pose_tf[:3, 3] = goal_tcp_pos + offset
+        else:
+            raise ValueError(f'Unsupported motion_type: {motion_type}')
+        return pose_tf
+
+    def _keyframe_motion_plan(self, state_list, pln_ctx=None, validate_edges=True, failure_stage='keyframe_path'):
+        if pln_ctx is None:
+            pln_ctx = self.pln_ctx
+        compact = []
+        for state in state_list:
+            if state is None:
+                continue
+            state = oum.np.asarray(state, dtype=oum.np.float32)
+            if len(compact) == 0 or not oum.np.allclose(compact[-1], state):
+                compact.append(state)
+        if not compact:
+            return None
+        for state in compact:
+            if not pln_ctx.is_state_valid(state):
+                self._set_last_plan_failure(failure_stage, 'state_in_collision')
+                return None
+        if validate_edges and len(compact) > 1:
+            for qs0, qs1 in zip(compact[:-1], compact[1:]):
+                if not pln_ctx.is_motion_valid(qs0, qs1):
+                    self._set_last_plan_failure(failure_stage, 'path_in_collision')
+                    return None
+        return self._motion_plan(compact)
+
     def _linear_motion_between_poses(self, start_pos, start_rotmat,
                                      goal_pos, goal_rotmat,
                                      seed_qs,
@@ -203,7 +265,8 @@ class ADPlanner:
                               final_ee_qs=None,
                               linear_granularity=0.03,
                               pln_ctx=None,
-                              use_rrt=True):
+                              use_rrt=True,
+                              pln_jnt=False):
         goal_tf = oum.np.asarray(goal_tf, dtype=oum.np.float32)
         via_tf = oum.np.asarray(via_tf, dtype=oum.np.float32)
         goal_robot_qs, resolved_final_ee_qs = self._split_state(goal_qs, ee_values=final_ee_qs)
@@ -211,6 +274,26 @@ class ADPlanner:
         if self.ee_actor is not None and resolved_via_ee_qs is None:
             resolved_via_ee_qs = resolved_final_ee_qs
         via_goal_qs = self._compose_state(goal_robot_qs, resolved_via_ee_qs)
+        if pln_ctx is None:
+            pln_ctx = self.pln_ctx
+        if pln_jnt:
+            start_state = self._compose_start_state(start_qs, ee_values=resolved_via_ee_qs)
+            via_state = self._solve_pose_state(
+                pose_tf=via_tf,
+                ref_qs=goal_robot_qs,
+                ee_qs=resolved_via_ee_qs,
+                pln_ctx=pln_ctx,
+                failure_stage='via_pose',
+            )
+            if via_state is None:
+                return None
+            goal_state = self._compose_state(goal_robot_qs, resolved_final_ee_qs)
+            return self._keyframe_motion_plan(
+                [start_state, via_state, goal_state],
+                pln_ctx=pln_ctx,
+                validate_edges=True,
+                failure_stage='via_keyframe_path',
+            )
         via_pos_err = float(oum.np.linalg.norm(goal_tf[:3, 3] - via_tf[:3, 3]))
         via_rot_err = float(oum.np.linalg.norm(goal_tf[:3, :3] - via_tf[:3, :3]))
         if via_pos_err <= 1e-6 and via_rot_err <= 1e-6:
@@ -384,14 +467,57 @@ class ADPlanner:
                      linear_granularity=0.03,
                      pln_ctx=None,
                      use_rrt=True,
+                     pln_jnt=False,
                      toggle_dbg=False):
         del toggle_dbg
         del end_qs
+        if pln_ctx is None:
+            pln_ctx = self.pln_ctx
         if goal_qs is not None:
             goal_qs = self._compose_state(*self._split_state(goal_qs))
             goal_tcp_pos, goal_tcp_rotmat = self._tcp_pose_from_qs(goal_qs)
         if goal_tcp_pos is None or goal_tcp_rotmat is None:
             raise ValueError('goal_tcp_pos/goal_tcp_rotmat or goal_qs is required')
+        if pln_jnt:
+            start_state = self._compose_start_state(start_qs)
+            if goal_qs is None:
+                ref_qs = self.robot.qs.copy() if start_state is None else start_state[:self.robot.ndof]
+                goal_qs = self.robot.ik_tcp_nearest(
+                    tgt_rotmat=oum.np.asarray(goal_tcp_rotmat, dtype=oum.np.float32),
+                    tgt_pos=oum.np.asarray(goal_tcp_pos, dtype=oum.np.float32),
+                    ref_qs=ref_qs,
+                )
+                if goal_qs is None:
+                    self._set_last_plan_failure('approach_goal_ik', 'goal_ik_failed')
+                    return None
+                goal_qs = self._compose_state(goal_qs)
+            key_states = [start_state]
+            if linear and approach_distance > 0.0:
+                approach_tf = self._offset_pose_tf(
+                    goal_tcp_pos=goal_tcp_pos,
+                    goal_tcp_rotmat=goal_tcp_rotmat,
+                    direction=approach_direction,
+                    distance=approach_distance,
+                    motion_type='sink',
+                )
+                ref_qs = goal_qs[:self.robot.ndof]
+                approach_state = self._solve_pose_state(
+                    pose_tf=approach_tf,
+                    ref_qs=ref_qs,
+                    ee_qs=goal_qs[self.robot.ndof:] if self.ee_actor is not None else None,
+                    pln_ctx=pln_ctx,
+                    failure_stage='approach_pose',
+                )
+                if approach_state is None:
+                    return None
+                key_states.append(approach_state)
+            key_states.append(goal_qs)
+            return self._keyframe_motion_plan(
+                key_states,
+                pln_ctx=pln_ctx,
+                validate_edges=True,
+                failure_stage='approach_keyframe_path',
+            )
         if not linear or approach_distance <= 0.0:
             if start_qs is None:
                 return self._motion_plan([goal_qs]) if goal_qs is not None else None
@@ -458,14 +584,58 @@ class ADPlanner:
                    linear_granularity=0.03,
                    pln_ctx=None,
                    use_rrt=True,
+                   pln_jnt=False,
                    toggle_dbg=False):
         del approach_direction, approach_distance
         del toggle_dbg
+        if pln_ctx is None:
+            pln_ctx = self.pln_ctx
         if goal_qs is not None:
             goal_qs = self._compose_state(*self._split_state(goal_qs))
             goal_tcp_pos, goal_tcp_rotmat = self._tcp_pose_from_qs(goal_qs)
         if goal_tcp_pos is None or goal_tcp_rotmat is None:
             raise ValueError('goal_tcp_pos/goal_tcp_rotmat or goal_qs is required')
+        if pln_jnt:
+            start_state = self._compose_start_state(start_qs)
+            end_state = self._compose_start_state(end_qs)
+            if goal_qs is None:
+                ref_qs = self.robot.qs.copy() if start_state is None else start_state[:self.robot.ndof]
+                goal_qs = self.robot.ik_tcp_nearest(
+                    tgt_rotmat=oum.np.asarray(goal_tcp_rotmat, dtype=oum.np.float32),
+                    tgt_pos=oum.np.asarray(goal_tcp_pos, dtype=oum.np.float32),
+                    ref_qs=ref_qs,
+                )
+                if goal_qs is None:
+                    self._set_last_plan_failure('depart_goal_ik', 'goal_ik_failed')
+                    return None
+                goal_qs = self._compose_state(goal_qs)
+            key_states = [start_state, goal_qs]
+            if linear and depart_distance > 0.0:
+                depart_tf = self._offset_pose_tf(
+                    goal_tcp_pos=goal_tcp_pos,
+                    goal_tcp_rotmat=goal_tcp_rotmat,
+                    direction=depart_direction,
+                    distance=depart_distance,
+                    motion_type='source',
+                )
+                ref_qs = goal_qs[:self.robot.ndof]
+                depart_state = self._solve_pose_state(
+                    pose_tf=depart_tf,
+                    ref_qs=ref_qs,
+                    ee_qs=goal_qs[self.robot.ndof:] if self.ee_actor is not None else None,
+                    pln_ctx=pln_ctx,
+                    failure_stage='depart_pose',
+                )
+                if depart_state is None:
+                    return None
+                key_states.append(depart_state)
+            key_states.append(end_state)
+            return self._keyframe_motion_plan(
+                key_states,
+                pln_ctx=pln_ctx,
+                validate_edges=True,
+                failure_stage='depart_keyframe_path',
+            )
         plan = None
         if start_qs is not None:
             goal_target = goal_qs
@@ -542,6 +712,7 @@ class ADPlanner:
                             linear_granularity=0.03,
                             pln_ctx=None,
                             use_rrt=True,
+                            pln_jnt=False,
                             toggle_dbg=False):
         del toggle_dbg
         app = self.gen_approach(
@@ -555,6 +726,7 @@ class ADPlanner:
             linear_granularity=linear_granularity,
             pln_ctx=pln_ctx,
             use_rrt=use_rrt,
+            pln_jnt=pln_jnt,
         )
         if app is None:
             return None
@@ -569,6 +741,7 @@ class ADPlanner:
             linear_granularity=linear_granularity,
             pln_ctx=pln_ctx,
             use_rrt=use_rrt,
+            pln_jnt=pln_jnt,
         )
         if dep is None:
             return None

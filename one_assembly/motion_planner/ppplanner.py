@@ -162,6 +162,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                             start_qs=None,
                             linear_granularity=0.03,
                             use_rrt=True,
+                            pln_jnt=False,
                             toggle_dbg=False):
         if self._grasp_has_collision(grasp):
             if toggle_dbg:
@@ -207,6 +208,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             linear_granularity=linear_granularity,
             pln_ctx=pick_pln_ctx,
             use_rrt=use_rrt,
+            pln_jnt=pln_jnt,
         )
         if pick_plan is None:
             if toggle_dbg:
@@ -247,6 +249,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 linear_granularity=linear_granularity,
                 pln_ctx=hold_pln_ctx,
                 use_rrt=use_rrt,
+                pln_jnt=pln_jnt,
             )
             if goal_plan is None:
                 if toggle_dbg:
@@ -279,6 +282,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                            linear_granularity=0.03,
                            reason_grasps=True,
                            use_rrt=True,
+                           pln_jnt=False,
                            toggle_dbg=False):
         if start_qs is None:
             start_qs = self.robot.qs.copy()
@@ -315,6 +319,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 start_qs=start_qs,
                 linear_granularity=linear_granularity,
                 use_rrt=use_rrt,
+                pln_jnt=pln_jnt,
                 toggle_dbg=toggle_dbg,
             )
             if full_plan is None:

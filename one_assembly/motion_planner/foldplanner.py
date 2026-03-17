@@ -285,22 +285,45 @@ class FoldPlanner(HierarchicalPlannerBase):
                          pln_ctx,
                          gid=None,
                          linear_granularity=0.03,
+                         pln_jnt=False,
                          toggle_dbg=False):
         current_tf = self._pose_to_tf(self._tcp_pose_from_qs(start_state))
         goal_tf_list = []
         for goal_pose in goal_pose_list:
             goal_tf, _goal_ee_qs = self._grasp_pose(grasp, obj_pose=goal_pose)
             goal_tf_list.append(goal_tf)
-        fold_plan = self.gen_piecewise_motion(
-            start_tcp_pos=current_tf[:3, 3],
-            start_tcp_rotmat=current_tf[:3, :3],
-            goal_tcp_pos_list=[goal_tf[:3, 3] for goal_tf in goal_tf_list],
-            goal_tcp_rotmat_list=[goal_tf[:3, :3] for goal_tf in goal_tf_list],
-            granularity=linear_granularity,
-            ee_values=ee_qs,
-            ref_qs=start_state[:self.robot.ndof],
-            pln_ctx=pln_ctx,
-        )
+        if pln_jnt:
+            key_states = [start_state]
+            ref_qs = start_state[:self.robot.ndof]
+            for goal_tf in goal_tf_list:
+                goal_state = self._solve_pose_state(
+                    pose_tf=goal_tf,
+                    ref_qs=ref_qs,
+                    ee_qs=ee_qs,
+                    pln_ctx=pln_ctx,
+                    failure_stage='fold_pose',
+                )
+                if goal_state is None:
+                    return None
+                key_states.append(goal_state)
+                ref_qs = goal_state[:self.robot.ndof]
+            fold_plan = self._keyframe_motion_plan(
+                key_states,
+                pln_ctx=pln_ctx,
+                validate_edges=True,
+                failure_stage='fold_keyframe_path',
+            )
+        else:
+            fold_plan = self.gen_piecewise_motion(
+                start_tcp_pos=current_tf[:3, 3],
+                start_tcp_rotmat=current_tf[:3, :3],
+                goal_tcp_pos_list=[goal_tf[:3, 3] for goal_tf in goal_tf_list],
+                goal_tcp_rotmat_list=[goal_tf[:3, :3] for goal_tf in goal_tf_list],
+                granularity=linear_granularity,
+                ee_values=ee_qs,
+                ref_qs=start_state[:self.robot.ndof],
+                pln_ctx=pln_ctx,
+            )
         if fold_plan is None and toggle_dbg:
             failure = self._last_plan_failure
             if failure is None:
@@ -321,6 +344,7 @@ class FoldPlanner(HierarchicalPlannerBase):
                                  start_qs=None,
                                  linear_granularity=0.03,
                                  use_rrt=True,
+                                 pln_jnt=False,
                                  exclude_entities=None,
                                  toggle_dbg=False):
         if start_qs is None:
@@ -358,6 +382,7 @@ class FoldPlanner(HierarchicalPlannerBase):
             linear_granularity=linear_granularity,
             pln_ctx=pick_pln_ctx,
             use_rrt=use_rrt,
+            pln_jnt=pln_jnt,
         )
         if pick_plan is None:
             if toggle_dbg:
@@ -385,6 +410,7 @@ class FoldPlanner(HierarchicalPlannerBase):
             pln_ctx=hold_pln_ctx,
             gid=gid,
             linear_granularity=linear_granularity,
+            pln_jnt=pln_jnt,
             toggle_dbg=toggle_dbg,
         )
         if fold_plan is None:
@@ -403,6 +429,7 @@ class FoldPlanner(HierarchicalPlannerBase):
                           linear_granularity=0.03,
                           reason_grasps=True,
                           use_rrt=True,
+                          pln_jnt=False,
                           exclude_entities=None,
                           toggle_dbg=False):
         if start_qs is None:
@@ -440,6 +467,7 @@ class FoldPlanner(HierarchicalPlannerBase):
                 start_qs=start_qs,
                 linear_granularity=linear_granularity,
                 use_rrt=use_rrt,
+                pln_jnt=pln_jnt,
                 exclude_entities=exclude_entities,
                 toggle_dbg=toggle_dbg,
             )
