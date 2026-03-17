@@ -1,6 +1,5 @@
 import argparse
 import builtins
-import pickle
 import time
 import sys
 from pathlib import Path
@@ -32,13 +31,6 @@ def parse_args():
         default='home',
         help='Layout name defined in layouts.yaml.')
     parser.add_argument(
-        '--layout-offset',
-        nargs=3,
-        type=float,
-        default=(0.015, 0.0, -0.025),
-        metavar=('X', 'Y', 'Z'),
-        help='Layout offset passed to WorkList.init_pose.')
-    parser.add_argument(
         '--density',
         type=float,
         default=0.01,
@@ -68,6 +60,11 @@ def parse_args():
         type=int,
         default=30,
         help='Number of top grasps to visualize.')
+    parser.add_argument(
+        '--action-view',
+        choices=('ghost', 'state'),
+        default='state',
+        help='Visualize action results as ghost overlays or sequential states.')
     parser.add_argument(
         '--save',
         action='store_true',
@@ -130,13 +127,42 @@ def visualize_grasps(base, gripper, grasps, show_count):
         pre_ghost.attach_to(base.scene)
 
 
-def maybe_save_grasps(target_work, grasps):
-    pickle_dir = ASSEMBLY_ROOT / 'pickles'
-    pickle_dir.mkdir(parents=True, exist_ok=True)
-    file_path = pickle_dir / f'{target_work.name}_specialized.pickle'
-    with open(file_path, 'wb') as f:
-        pickle.dump(grasps, f)
-    print(f'saved: {file_path}')
+def attach_local_frame(base, pose_owner, ax_length=0.04, radius_scale=1.0):
+    frame = ossop.frame(
+        pos=pose_owner.pos,
+        rotmat=pose_owner.rotmat,
+        ax_length=ax_length,
+        radius_scale=radius_scale)
+    frame.attach_to(base.scene)
+    return frame
+
+
+def visualize_action_results(base, worklist, action_view='ghost'):
+    for work in worklist.work:
+        start_pose = work.current_pose
+        for step_idx, step in enumerate(work.steps):
+            pose = work.pose_after_action(step_idx, start_pose=start_pose)
+            if pose is None:
+                continue
+            if step.action_type == 'place':
+                ghost = work.model.clone()
+                ghost.set_rotmat_pos(rotmat=pose[1], pos=pose[0])
+                ghost.alpha = 0.18
+                ghost.rgb = ouc.BasicColor.GREEN
+            elif step.action_type == 'fold':
+                ghost = work.model.clone()
+                ghost.set_rotmat_pos(rotmat=pose[1], pos=pose[0])
+                ghost.alpha = 0.18
+                ghost.rgb = ouc.BasicColor.YELLOW
+            else:
+                ghost = ossop.arrow(spos=pose[0], 
+                                    epos=pose[0] + pose[1][:, 2] * 0.04,
+                                    )
+                ghost.alpha = 0.18  
+                ghost.rgb = ouc.BasicColor.BLUE
+            ghost.attach_to(base.scene)
+            if action_view == 'state' and step.action_type != 'screw':
+                start_pose = pose
 
 
 def main():
@@ -151,10 +177,11 @@ def main():
     ossop.frame(ax_length=0.05).attach_to(base.scene)
 
     worklist = WorkList()
-    worklist.init_pose(
-        seed=args.layout,
-        pos=np.asarray(args.layout_offset, dtype=np.float32))
+    worklist.init_pose(seed=args.layout)
     worklist.attach_to(base.scene)
+    # if worklist.work_base is not None:
+    #     attach_local_frame(base, worklist.work_base, ax_length=0.06, radius_scale=1.2)
+    visualize_action_results(base, worklist, action_view=args.action_view)
 
     target_work = resolve_target(worklist, args.target)
     target_work.model.alpha = 1.0
@@ -182,9 +209,6 @@ def main():
 
     print_summary(target_work, grasps, toc - tic, args.layout)
     visualize_grasps(base, gripper, grasps, args.show_count)
-
-    if args.save:
-        maybe_save_grasps(target_work, grasps)
 
     base.run()
 

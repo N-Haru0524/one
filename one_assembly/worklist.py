@@ -1,12 +1,58 @@
 import os
-from typing import List
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import yaml
 
-import one.utils.math as oum
-import one.utils.constant as ouc
 import one.scene.scene_object as osso
+import one.utils.constant as ouc
+import one.utils.math as oum
+
 from one_assembly.work import Work
+
+
+Pose = Tuple[np.ndarray, np.ndarray]
+
+
+@dataclass(frozen=True)
+class LayoutEntry:
+    work_idx: int
+    preplace: bool
+    pos: np.ndarray
+    rotmat: np.ndarray
+
+
+@dataclass(frozen=True)
+class LayoutSpec:
+    base_mesh_file: str
+    base_pos_offset: np.ndarray
+    base_rotmat: np.ndarray
+    screw_origin: np.ndarray
+    screw_rotmat: np.ndarray
+    screw_pitch: np.ndarray
+    part_entries: Tuple[LayoutEntry, ...]
+
+
+def _default_root_dir() -> str:
+    asset_root = os.path.join(os.path.dirname(__file__), 'worklists', 'electric_assembly')
+    if not os.path.isdir(asset_root):
+        raise FileNotFoundError(f'Assembly asset root not found: {asset_root}')
+    return asset_root
+
+
+def _as_vec3(values, *, field_name: str) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float32)
+    if array.shape != (3,):
+        raise ValueError(f'{field_name} must have shape (3,), got {array.shape}')
+    return array
+
+
+def _as_rotmat(values, *, field_name: str) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float32)
+    if array.shape != (3, 3):
+        raise ValueError(f'{field_name} must have shape (3, 3), got {array.shape}')
+    return array
 
 
 class WorkList:
@@ -17,152 +63,257 @@ class WorkList:
                  meshpath=None,
                  alpha=1.0,
                  collision_type=ouc.CollisionType.AABB):
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        default_root = os.path.join(base_dir, 'from_wrs')
+        default_root = _default_root_dir()
         yamlpath = yamlpath or os.path.join(default_root, 'yamls')
         meshpath = meshpath or os.path.join(default_root, 'meshes')
-        rotmat = oum.rotmat_from_euler(np.pi / 2, 0, 0, order='rxyz') if rotmat is None else rotmat
+        if rotmat is None:
+            rotmat = oum.rotmat_from_euler(np.pi / 2, 0, 0, order='rxyz')
 
         self.yamlpath = yamlpath
         self.meshpath = meshpath
-        self.rotmat = np.asarray(rotmat, dtype=np.float32)
         self.pos = np.asarray(pos, dtype=np.float32)
+        self.rotmat = np.asarray(rotmat, dtype=np.float32)
+        self.alpha = float(alpha)
+        self.collision_type = collision_type
         self.screw_counter = 0
+        self.layout_name: Optional[str] = None
+        self.work_base = None
 
-        self.work: List[Work] = []
-        if yamlpath == os.path.join(default_root, 'yamls'):
-            colors = [
-                ouc.ExtendedColor.ORANGE_RED,
-                ouc.BasicColor.GRAY,
-                ouc.BasicColor.BLUE,
-                ouc.ExtendedColor.STEEL_GRAY,
-                ouc.ExtendedColor.DEEP_SKY_BLUE,
-                ouc.BasicColor.YELLOW,
-            ]
-            for idx, color in enumerate(colors):
-                self.work.append(Work(pos=pos, rotmat=self.rotmat,
-                                      yamlpath=yamlpath, meshpath=meshpath,
-                                      obj_num=idx, rgb=color, alpha=alpha,
-                                      collision_type=collision_type))
-        else:
-            obj_num = 0
-            for file in os.listdir(yamlpath):
-                if file.endswith('.yaml'):
-                    obj_num += 1
-            for i in range(obj_num):
-                self.work.append(Work(pos=pos, rotmat=self.rotmat,
-                                      yamlpath=yamlpath, meshpath=meshpath,
-                                      obj_num=i, rgb=ouc.ExtendedColor.ORANGE_RED,
-                                      alpha=alpha, collision_type=collision_type))
+        self.work = self._load_work_items(alpha=self.alpha)
+        self._work_by_name = {work.name: work for work in self.work}
+        self._object_key_to_index = {f'object{work.obj_num}': idx for idx, work in enumerate(self.work)}
+        self.layout_specs = self._load_layout_specs()
+
+    def _load_work_items(self, alpha: float) -> List[Work]:
+        object_indices = self._discover_object_indices()
+        colors = [
+            ouc.ExtendedColor.ORANGE_RED,
+            ouc.BasicColor.GRAY,
+            ouc.BasicColor.BLUE,
+            ouc.ExtendedColor.STEEL_GRAY,
+            ouc.ExtendedColor.DEEP_SKY_BLUE,
+            ouc.BasicColor.YELLOW,
+        ]
+        work_items = []
+        for idx in object_indices:
+            color = colors[idx] if idx < len(colors) else ouc.ExtendedColor.ORANGE_RED
+            work_items.append(Work(
+                pos=self.pos,
+                rotmat=self.rotmat,
+                yamlpath=self.yamlpath,
+                meshpath=self.meshpath,
+                obj_num=idx,
+                rgb=color,
+                alpha=alpha,
+                collision_type=self.collision_type))
+        return work_items
+
+    def _discover_object_indices(self) -> List[int]:
+        if not os.path.isdir(self.yamlpath):
+            return list(range(6))
+        object_indices = []
+        for file_name in os.listdir(self.yamlpath):
+            if not file_name.startswith('object') or not file_name.endswith('.yaml'):
+                continue
+            suffix = file_name[len('object'):-len('.yaml')]
+            if not suffix.isdigit():
+                continue
+            object_indices.append(int(suffix))
+        return sorted(object_indices)
+
+    def _layout_file_path(self) -> str:
+        return os.path.join(self.yamlpath, 'layouts.yaml')
+
+    def _load_layout_specs(self) -> Dict[str, LayoutSpec]:
+        layout_file = self._layout_file_path()
+        if not os.path.isfile(layout_file):
+            raise FileNotFoundError(f'Layout config not found: {layout_file}')
+        with open(layout_file, 'r', encoding='utf-8') as f:
+            raw_layouts = yaml.safe_load(f) or {}
+        if not isinstance(raw_layouts, dict):
+            raise ValueError(f'Layout config must be a mapping: {layout_file}')
+
+        layout_specs = {}
+        for layout_name, layout_data in raw_layouts.items():
+            if not isinstance(layout_data, dict):
+                raise ValueError(f'Layout "{layout_name}" must be a mapping')
+            work_base_data = layout_data.get('work_base') or {}
+            screw_data = layout_data.get('screw') or {}
+            parts_data = layout_data.get('parts') or {}
+            if not isinstance(parts_data, dict):
+                raise ValueError(f'Layout "{layout_name}" parts must be a mapping')
+
+            part_entries = []
+            for part_key, part_data in parts_data.items():
+                if not isinstance(part_data, dict):
+                    raise ValueError(f'Layout "{layout_name}" part "{part_key}" must be a mapping')
+                work_idx = self._resolve_layout_part_index(part_key)
+                part_entries.append(LayoutEntry(
+                    work_idx=work_idx,
+                    preplace=bool(part_data.get('preplace', False)),
+                    pos=_as_vec3(part_data.get('pos', [0.0, 0.0, 0.0]),
+                                 field_name=f'{layout_name}.{part_key}.pos'),
+                    rotmat=_as_rotmat(part_data.get('rotmat', np.eye(3, dtype=np.float32)),
+                                      field_name=f'{layout_name}.{part_key}.rotmat')))
+
+            base_mesh = str(work_base_data.get('mesh', 'work_base.stl'))
+            layout_specs[layout_name] = LayoutSpec(
+                base_mesh_file=os.path.join(self.meshpath, base_mesh),
+                base_pos_offset=_as_vec3(work_base_data.get('pos', [0.0, 0.0, 0.0]),
+                                         field_name=f'{layout_name}.work_base.pos'),
+                base_rotmat=_as_rotmat(work_base_data.get('rotmat', np.eye(3, dtype=np.float32)),
+                                       field_name=f'{layout_name}.work_base.rotmat'),
+                screw_origin=_as_vec3(screw_data.get('origin', [0.0, 0.0, 0.0]),
+                                      field_name=f'{layout_name}.screw.origin'),
+                screw_rotmat=_as_rotmat(screw_data.get('rotmat', np.eye(3, dtype=np.float32)),
+                                        field_name=f'{layout_name}.screw.rotmat'),
+                screw_pitch=_as_vec3(screw_data.get('pitch', [0.0, 0.0, 0.0]),
+                                     field_name=f'{layout_name}.screw.pitch'),
+                part_entries=tuple(part_entries))
+        return layout_specs
+
+    def _resolve_layout_part_index(self, part_key: str) -> int:
+        if part_key in self._object_key_to_index:
+            return self._object_key_to_index[part_key]
+        idx = self.index_of(part_key)
+        if idx is not None:
+            return idx
+        raise KeyError(f'Unknown layout part key: {part_key}')
+
+    def __len__(self) -> int:
+        return len(self.work)
+
+    def __iter__(self):
+        return iter(self.work)
+
+    def __getitem__(self, index: int) -> Work:
+        return self.work[index]
+
+    def names(self) -> List[str]:
+        return [work.name for work in self.work]
+
+    def get_work(self, name: str) -> Optional[Work]:
+        return self._work_by_name.get(name)
+
+    def index_of(self, name: str) -> Optional[int]:
+        for idx, work in enumerate(self.work):
+            if work.name == name:
+                return idx
+        return None
 
     def attach_to(self, scene):
-        if hasattr(self, 'work_base'):
+        if self.work_base is not None:
             self.work_base.attach_to(scene)
         for work in self.work:
             work.attach_to(scene)
 
     def detach(self, scene):
-        if hasattr(self, 'work_base'):
+        if self.work_base is not None:
             self.work_base.detach_from(scene)
         for work in self.work:
             work.detach(scene)
 
-    def init_pose(self, seed='home', pos=np.array([0.015, 0.0, -0.025], dtype=np.float32)):
-        if seed not in ('home', 'factory'):
-            return
-        x = pos[0]
-        y = pos[1]
-        z = pos[2]
-        work_base_file = os.path.join(self.meshpath, 'work_base.stl')
+    def reset_home_poses(self):
+        for work in self.work:
+            work.reset_pose()
+
+    def _base_pos(self, layout: LayoutSpec) -> np.ndarray:
+        return self.rotmat @ layout.base_pos_offset + self.pos
+
+    def _ensure_work_base(self):
+        if self.work_base is not None:
+            return self.work_base
+        if self.layout_name is None:
+            raise ValueError('Cannot create work base before a layout is selected')
+        work_base_file = self.layout_specs[self.layout_name].base_mesh_file
         self.work_base = osso.SceneObject.from_file(
             work_base_file,
             collision_type=ouc.CollisionType.AABB,
             rgb=ouc.ExtendedColor.BEIGE,
             alpha=1.0)
-        base_rot = oum.rotmat_from_euler(np.pi / 2, 0, 0, order='rxyz')
-        base_pos = base_rot @ np.array([0.24 + x, -0.115 + z, -y], dtype=np.float32) + self.pos
-        base_rot = oum.rotmat_from_euler(0, -np.pi / 2, -np.pi / 2, order='rxyz')
-        self.work_base.pos = base_pos
-        self.work_base.rotmat = base_rot
+        return self.work_base
 
-        self.work[0].model.pos = self.work[0].model.pos
-        self.work[0].model.rotmat = self.work[0].model.rotmat
-        self.work[1].model.pos = self.work[1].model.pos
-        self.work[1].model.rotmat = self.work[1].model.rotmat
-        if seed == 'home':
-            self.work[2].model.pos = base_rot @ np.array([0.025, 0.03, -0.0215], dtype=np.float32) + base_pos
-            self.work[2].model.rotmat = base_rot @ oum.rotmat_from_euler(
-                0, 0, np.pi / 2 + np.pi / 24, order='rxyz')
-            self.work[3].model.pos = base_rot @ np.array([-0.029, 0.007, -0.04], dtype=np.float32) + base_pos
-            self.work[3].model.rotmat = base_rot @ oum.rotmat_from_euler(
-                -np.pi / 2, 0, -np.pi / 2, order='rxyz')
-            self.work[4].model.pos = base_rot @ np.array([-0.001, 0.0325, -0.0688], dtype=np.float32) + base_pos
-            self.work[4].model.rotmat = base_rot @ oum.rotmat_from_euler(
-                np.pi / 2, 0, -np.pi / 2, order='rxyz')
-            self.work[5].model.pos = base_rot @ np.array([-0.053, 0.007, 0.04], dtype=np.float32) + base_pos
-            self.work[5].model.rotmat = base_rot @ oum.rotmat_from_euler(
-                0, np.pi, 0, order='rxyz')
-        else:
-            self.work[2].model.pos = base_rot @ np.array([0.025, 0.03, -0.022], dtype=np.float32) + base_pos
-            self.work[2].model.rotmat = base_rot @ oum.rotmat_from_euler(
-                0, 0, np.pi / 2 + np.pi / 24, order='rxyz')
-            self.work[3].model.pos = base_rot @ np.array([-0.029, 0.006, -0.04], dtype=np.float32) + base_pos
-            self.work[3].model.rotmat = base_rot @ oum.rotmat_from_euler(
-                -np.pi / 2, 0, -np.pi / 2, order='rxyz')
-            self.work[4].model.pos = base_rot @ np.array([-0.001, 0.0325, -0.0688], dtype=np.float32) + base_pos
-            self.work[4].model.rotmat = base_rot @ oum.rotmat_from_euler(
-                np.pi / 2, 0, -np.pi / 2, order='rxyz')
-            self.work[5].model.pos = base_rot @ np.array([-0.053, 0.006, 0.04], dtype=np.float32) + base_pos
-            self.work[5].model.rotmat = base_rot @ oum.rotmat_from_euler(
-                0, np.pi, 0, order='rxyz')
+    def init_pose(self, seed='home'):
+        layout = self.layout_specs.get(seed)
+        if layout is None:
+            return
+
+        self.layout_name = seed
+        self.screw_counter = 0
+
+        base_pos = self._base_pos(layout)
+        work_base = self._ensure_work_base()
+        work_base.pos = base_pos
+        work_base.rotmat = self.rotmat @ layout.base_rotmat
+
+        for entry in layout.part_entries:
+            if entry.work_idx >= len(self.work):
+                continue
+            if entry.preplace:
+                part_pos = self.rotmat @ entry.pos + self.pos
+                part_rotmat = self.rotmat @ entry.rotmat
+            else:
+                part_pos = work_base.rotmat @ entry.pos + work_base.pos
+                part_rotmat = work_base.rotmat @ entry.rotmat
+            self.work[entry.work_idx].set_pose(part_pos, part_rotmat)
 
     def init_pos(self, seed=0):
-        np.random.seed(seed)
+        rng = np.random.default_rng(seed)
         for work in self.work:
-            work.model.pos = np.random.rand(3) / 2 + np.array([-0.5, -0.25, 0.1], dtype=np.float32)
+            rand_pos = rng.random(3, dtype=np.float32) / 2.0 + np.array([-0.5, -0.25, 0.1], dtype=np.float32)
+            work.model.pos = rand_pos
 
     def init_rotmat(self, seed=0):
-        np.random.seed(seed)
+        rng = np.random.default_rng(seed)
         for work in self.work:
-            axis = np.random.rand(3)
-            angle = float(np.random.rand())
+            axis = rng.random(3, dtype=np.float32)
+            angle = float(rng.random())
             work.model.rotmat = oum.rotmat_from_axangle(axis, angle)
 
     def get_screw_pose(self):
-        distance = -0.02
-        if hasattr(self, 'work_base'):
-            before_tf = oum.tf_from_rotmat_pos(self.work_base.rotmat, self.work_base.pos)
-            rel_pos = np.array([0.075, 0.006, 0.06 + distance * self.screw_counter], dtype=np.float32)
-            rel_rot = oum.rotmat_from_euler(np.pi / 2, 0, 0, order='rxyz')
-            after_tf = before_tf @ oum.tf_from_rotmat_pos(rel_rot, rel_pos)
-            screw_pos, screw_rotmat = after_tf[:3, 3], after_tf[:3, :3]
-            self.screw_counter += 1
-        else:
-            screw_pos = np.zeros(3, dtype=np.float32)
-            screw_rotmat = np.eye(3, dtype=np.float32)
-        return screw_pos, screw_rotmat
+        if self.work_base is None or self.layout_name not in self.layout_specs:
+            return np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32)
 
-    def copy(self, alpha=1.0):
-        worklist = WorkList(pos=self.pos, rotmat=self.rotmat, alpha=alpha)
-        return worklist
+        layout = self.layout_specs[self.layout_name]
+        rel_pos = layout.screw_origin + layout.screw_pitch * self.screw_counter
+        before_tf = oum.tf_from_rotmat_pos(self.work_base.rotmat, self.work_base.pos)
+        after_tf = before_tf @ oum.tf_from_rotmat_pos(layout.screw_rotmat, rel_pos)
+        self.screw_counter += 1
+        return after_tf[:3, 3].astype(np.float32), after_tf[:3, :3].astype(np.float32)
+
+    def current_part_poses(self) -> Dict[str, Pose]:
+        return {work.name: work.current_pose for work in self.work}
+
+    def set_part_poses(self, part_poses: Dict[str, Pose]):
+        for name, pose in part_poses.items():
+            work = self.get_work(name)
+            if work is None:
+                continue
+            work.set_pose(*pose)
+
+    def apply_actions(self, actions: Sequence[Tuple[int, int]]):
+        results = []
+        for work_idx, action_idx in actions:
+            results.append(self.work[work_idx].apply_action(action_idx))
+        return results
 
     def actions(self, work_num: int, act_num):
         return self.work[work_num].action(act_num)
 
-if __name__ == '__main__':
-    import builtins
-    from one import ovw, ossop
-
-    base = ovw.World(cam_pos=(0.8, 0.8, 0.8), cam_lookat_pos=(0.0, 0.0, 0.2))
-    builtins.base = base
-    ossop.gen_frame().attach_to(base.scene)
-
-    worklist = WorkList()
-    worklist.init_pose(seed='home')
-    worklist.attach_to(base.scene)
-
-    for _ in range(5):
-        screw_pos, screw_rotmat = worklist.get_screw_pose()
-        ossop.gen_frame(pos=screw_pos, rotmat=screw_rotmat, ax_length=0.05).attach_to(base.scene)
-
-    base.run()
+    def copy(self, alpha=1.0):
+        copied = WorkList(
+            pos=self.pos.copy(),
+            rotmat=self.rotmat.copy(),
+            yamlpath=self.yamlpath,
+            meshpath=self.meshpath,
+            alpha=alpha,
+            collision_type=self.collision_type)
+        part_poses = self.current_part_poses()
+        copied.set_part_poses(part_poses)
+        copied.screw_counter = self.screw_counter
+        copied.layout_name = self.layout_name
+        if self.work_base is not None:
+            copied_base = copied._ensure_work_base()
+            copied_base.pos = self.work_base.pos.copy()
+            copied_base.rotmat = self.work_base.rotmat.copy()
+        return copied
