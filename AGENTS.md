@@ -12,22 +12,53 @@ The project is a lightweight MuJoCo-based robotics research toolkit.
 
 ## Build, Lint, and Test
 
+### Codex Standard Environment
+- Codex should use the repository-local virtual environment at `/home/wrs/nagai/one/.venv`.
+- Do not use bare `python`, `python3`, or `pip` for repo tasks unless the command explicitly resolves to `.venv`.
+- Preferred Python entrypoint: `./codex_python.sh`
+- Preferred interactive shell for headless work: `./dev_headless.sh`
+- Preferred GUI launcher: `./dev_gui.sh`
+- If `.venv` is missing, recreate it with `uv venv --python 3.12 .venv` and install deps with `uv pip install -e .`.
+- Treat GUI scripts separately from headless scripts:
+  - Headless/default Codex execution should use `PYGLET_HEADLESS=1`.
+  - Visualization scripts that construct `ovw.World` or call `base.run()` require a valid display session and should be launched through `./dev_gui.sh`.
+  - `./dev_gui.sh` expects an existing X11 display such as `DISPLAY=:0`. It does not start an X server.
+  - Before running a GUI script, verify the session with `echo $DISPLAY` and `xset q`.
+  - If GUI startup fails, check `DISPLAY`, `XAUTHORITY`, X11 permissions, and OpenGL availability before changing Python dependencies.
+
 ### Install
 ```bash
-pip install -e .
+./codex_python.sh -m pip install -e .
 ```
 
 ### Run a Single Test
 ```bash
-python test_<name>.py
+./codex_python.sh test_<name>.py
+```
+
+### Run a GUI Script
+```bash
+./dev_gui.sh ./codex_python.sh path/to/script.py
+```
+
+Example:
+```bash
+./dev_gui.sh ./codex_python.sh /home/wrs/nagai/one/nagai/test_assembly_sequence_visual.py
+```
+
+GUI preflight:
+```bash
+echo $DISPLAY
+xset q
+./dev_gui.sh ./codex_python.sh /home/wrs/nagai/one/nagai/test_assembly_sequence_visual.py
 ```
 
 Examples:
 ```bash
-python test_2fg7.py
-python test_collider_bunny.py
-python test_rrtc_rs007l.py
-python test_mujoco_bunny.py
+./codex_python.sh test_2fg7.py
+./codex_python.sh test_collider_bunny.py
+./codex_python.sh test_rrtc_rs007l.py
+./codex_python.sh test_mujoco_bunny.py
 ```
 
 ### Lint/Format
