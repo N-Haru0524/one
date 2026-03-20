@@ -2,11 +2,14 @@ import os
 import sys
 
 import numpy as np
+import one.geom.loader as ogl
 import one.utils.constant as ouc
 import one.utils.math as oum
 import one.robots.base.mech_base as orbmb
 import one.robots.base.mech_structure as orbms
 import one.robots.manipulators.kawasaki.rs007l.rs007l as orkrs
+import one.scene.collision_shape as osc
+import one.scene.render_model as osrm
 import one.scene.scene_object as osso
 import one.scene.render_model_primitive as osrmp
 
@@ -17,6 +20,11 @@ _LFT_ARM_HOME = np.radians(oum.vec(0.0, 0.0, -90.0, 0.0, -90.0, -90.0))
 _RGT_ARM_HOME = np.radians(
     oum.vec(20.966, 9.271, -104.327, 81.122, -109.085, 244.963)
 )
+_LFT_ARM_LMT_LO = np.radians(oum.vec(-180.0, -40.0, -157.0, -100.0, -125.0, -175.0))
+_LFT_ARM_LMT_UP = np.radians(oum.vec(110.0, 90.0, -20.0, 100.0, 0.0, 130.0))
+_RGT_ARM_LMT_LO = np.radians(oum.vec(-110.0, -40.0, -157.0, -40.0, -125.0, 0.0))
+_RGT_ARM_LMT_UP = np.radians(oum.vec(180.0, 90.0, -20.0, 150.0, 0.0, 360.0))
+
 _ARM_MOUNT_ROT = oum.rotmat_from_euler(0.0, 0.0, -np.pi / 2.0)
 _LFT_ARM_MOUNT_TF = oum.tf_from_rotmat_pos(rotmat=_ARM_MOUNT_ROT, pos=(0.0, 0.25, 0.0))
 _RGT_ARM_MOUNT_TF = oum.tf_from_rotmat_pos(rotmat=_ARM_MOUNT_ROT, pos=(0.0, -0.25, 0.0))
@@ -28,13 +36,30 @@ _RGT_EE_ENGAGE_TF = oum.tf_from_rotmat_pos(
 
 def prepare_body_ms():
     structure = orbms.MechStruct()
-    mesh_path = os.path.join(structure.res_dir, 'meshes', 'base_bunri.stl')
-    body_lnk = orbms.Link.from_file(
-        mesh_path,
-        collision_type=ouc.CollisionType.MESH,
-        rgb=(0.42, 0.42, 0.42),
-        scale=(1.0, 1.0, 1.0),
+    mesh_dir = os.path.join(structure.res_dir, 'meshes')
+    mesh_names = sorted(
+        name for name in os.listdir(mesh_dir)
+        if name.endswith('.stl') and name != 'base_bunri.stl'
     )
+    if not mesh_names:
+        mesh_names = ['base_bunri.stl']
+    body_lnk = orbms.Link(collision_type=ouc.CollisionType.MESH)
+    body_lnk.file_path = os.path.join(mesh_dir, mesh_names[0])
+    for mesh_name in mesh_names:
+        mesh_path = os.path.join(mesh_dir, mesh_name)
+        render_model = osrm.RenderModel(
+            geom=ogl.load_geometry(mesh_path, scale=(1.0, 1.0, 1.0)),
+            rgb=(0.42, 0.42, 0.42),
+        )
+        body_lnk.add_visual(render_model, auto_make_collision=False)
+        body_lnk.add_collision(
+            osc.MeshCollisionShape(
+                file_path=mesh_path,
+                geom=render_model.geom,
+                rotmat=render_model.rotmat,
+                pos=render_model.pos,
+            )
+        )
     structure.add_lnk(body_lnk)
     structure.compile()
     return structure
@@ -65,6 +90,14 @@ def _make_flange_adapter(length=0.105, radius=0.035, rgb=(0.35, 0.35, 0.35)):
     return adapter
 
 
+def _set_arm_joint_limits(arm, lmt_lo, lmt_up):
+    lmt_lo = np.asarray(lmt_lo, dtype=np.float32)
+    lmt_up = np.asarray(lmt_up, dtype=np.float32)
+    arm._chain.lmt_lo = lmt_lo.copy()
+    arm._chain.lmt_up = lmt_up.copy()
+    arm._solver.joint_limits = (arm._chain.lmt_lo, arm._chain.lmt_up)
+
+
 class KHIBunri:
     """Dual-arm KHI bunri cell for one."""
 
@@ -81,6 +114,8 @@ class KHIBunri:
         self.rgt_adapter = _make_flange_adapter()
         self.lft_arm.is_free = True
         self.rgt_arm.is_free = True
+        _set_arm_joint_limits(self.lft_arm, _LFT_ARM_LMT_LO, _LFT_ARM_LMT_UP)
+        _set_arm_joint_limits(self.rgt_arm, _RGT_ARM_LMT_LO, _RGT_ARM_LMT_UP)
 
         self.body.mount(self.lft_arm, self.body.runtime_root_lnk, _LFT_ARM_MOUNT_TF)
         self.body.mount(self.rgt_arm, self.body.runtime_root_lnk, _RGT_ARM_MOUNT_TF)
