@@ -116,12 +116,28 @@ class FoldPlanner(HierarchicalPlannerBase):
                                 exclude_entities=None,
                                 toggle_dbg=False):
         available_ids = list(range(len(grasp_collection)))
-        pick_pln_ctx = self._filtered_pln_ctx(exclude_entities=exclude_entities)
+        pick_pln_ctx = self._precise_pln_ctx(
+            exclude_entities=exclude_entities,
+            backend=self.reasoning_backend,
+        )
+        pick_transit_pln_ctx = self._filtered_pln_ctx(exclude_entities=exclude_entities)
         hold_ctx_cache = {}
         self._last_reason_common_grasp_report = {
             'survived_gids': [],
             'failures': {},
         }
+
+        def hold_pln_ctx_for_gid(gid, backend):
+            return hold_ctx_cache.setdefault(
+                (gid, backend),
+                self._hold_pln_ctx(
+                    obj_model=obj_model,
+                    grasp=grasp_collection[gid],
+                    pick_pose=pick_pose,
+                    exclude_entities=exclude_entities,
+                    backend=backend,
+                ),
+            )
 
         def classify_reason(stats):
             if stats['rejected_no_ik']:
@@ -160,16 +176,9 @@ class FoldPlanner(HierarchicalPlannerBase):
                     tcp_rotmat=tcp_tf[:3, :3],
                     ee_qs=ee_qs,
                     pln_ctx=(
-                        pick_pln_ctx if label.startswith('pick_')
-                        else hold_ctx_cache.setdefault(
-                            gid,
-                            self._hold_pln_ctx(
-                                obj_model=obj_model,
-                                grasp=grasp_collection[gid],
-                                pick_pose=pick_pose,
-                                exclude_entities=exclude_entities,
-                            ),
-                        )
+                        pick_transit_pln_ctx if label == 'pick_approach_start'
+                        else pick_pln_ctx if label == 'pick_goal'
+                        else hold_pln_ctx_for_gid(gid, self.transit_backend)
                     ),
                     linear_granularity=linear_granularity,
                     ref_qs=self.robot.qs.copy(),
@@ -349,6 +358,7 @@ class FoldPlanner(HierarchicalPlannerBase):
                                  toggle_dbg=False):
         if start_qs is None:
             start_qs = self.robot.qs.copy()
+        start_robot_qs, _start_ee_qs = self._split_state(start_qs)
         open_ee_qs = self._max_open_ee_qs()
         pick_pln_ctx = self._filtered_pln_ctx(exclude_entities=exclude_entities)
         obj_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
@@ -359,7 +369,7 @@ class FoldPlanner(HierarchicalPlannerBase):
             ee_qs=ee_qs,
             pln_ctx=pick_pln_ctx,
             linear_granularity=linear_granularity,
-            ref_qs=start_qs,
+            ref_qs=start_robot_qs,
         )
         if toggle_dbg:
             if pick_stats['survived']:
@@ -401,6 +411,7 @@ class FoldPlanner(HierarchicalPlannerBase):
             grasp=grasp,
             pick_pose=obj_pose_tf,
             exclude_entities=exclude_entities,
+            backend=self.transit_backend,
         )
         fold_plan = self._gen_fold_motion(
             grasp=grasp,
@@ -480,3 +491,48 @@ class FoldPlanner(HierarchicalPlannerBase):
         if toggle_dbg:
             print('[pickfold] no feasible pick-and-fold plan found')
         return None
+
+    def gen_hold_and_fold(self,
+                          obj_model,
+                          grasp,
+                          goal_pose_list,
+                          start_qs=None,
+                          linear_granularity=0.03,
+                          pln_jnt=False,
+                          exclude_entities=None,
+                          gid=None,
+                          toggle_dbg=False):
+        if start_qs is None:
+            start_qs = self.robot.qs.copy()
+        obj_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
+        _pick_tf, _pick_pre_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(
+            grasp,
+            obj_pose=obj_pose_tf,
+        )
+        start_state = self._compose_state(*self._split_state(start_qs, ee_values=ee_qs))
+        hold_pln_ctx = self._hold_pln_ctx(
+            obj_model=obj_model,
+            grasp=grasp,
+            pick_pose=obj_pose_tf,
+            exclude_entities=exclude_entities,
+            backend=self.transit_backend,
+        )
+        if not hold_pln_ctx.is_state_valid(start_state):
+            if toggle_dbg:
+                print(f'[holdfold gid={gid}] start state invalid while holding')
+            return None
+        fold_plan = self._gen_fold_motion(
+            grasp=grasp,
+            goal_pose_list=goal_pose_list,
+            start_state=start_state,
+            ee_qs=ee_qs,
+            pln_ctx=hold_pln_ctx,
+            gid=gid,
+            linear_granularity=linear_granularity,
+            pln_jnt=pln_jnt,
+            toggle_dbg=toggle_dbg,
+        )
+        if fold_plan is None:
+            return None
+        fold_plan.events['gid'] = gid
+        return fold_plan

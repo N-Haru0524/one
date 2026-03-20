@@ -55,6 +55,57 @@ class ScrewPlanner(HierarchicalPlannerBase):
             goal_pose_list.append((tgt_pos.copy(), rotmat.astype(oum.np.float32)))
         return goal_pose_list
 
+    def _goal_pose_angle_offset(self, goal_pose):
+        goal_tf = self._pose_to_tf(goal_pose)
+        goal_rotmat = goal_tf[:3, :3]
+        z_ax = self._unit_vec(goal_rotmat[:, 2])
+        x0 = oum.orth_vec(z_ax, toggle_unit=True).astype(oum.np.float32)
+        y0 = self._unit_vec(oum.np.cross(z_ax, x0))
+        desired_x = oum.np.asarray(goal_rotmat[:, 0], dtype=oum.np.float32)
+        desired_x = desired_x - z_ax * float(oum.np.dot(desired_x, z_ax))
+        x_norm = float(oum.np.linalg.norm(desired_x))
+        if x_norm <= 0.0:
+            desired_y = oum.np.asarray(goal_rotmat[:, 1], dtype=oum.np.float32)
+            desired_x = oum.np.cross(desired_y, z_ax).astype(oum.np.float32)
+            x_norm = float(oum.np.linalg.norm(desired_x))
+            if x_norm <= 0.0:
+                return 0.0
+        desired_x = (desired_x / x_norm).astype(oum.np.float32)
+        return float(oum.np.arctan2(oum.np.dot(desired_x, y0), oum.np.dot(desired_x, x0)))
+
+    def _resolve_goal_pose_list(self, goal_pose_list, tgt_pos, tgt_vec, resolution, angle_offset):
+        if goal_pose_list is None:
+            if tgt_pos is None or tgt_vec is None:
+                raise ValueError('goal_pose_list or tgt_pos/tgt_vec is required')
+            return self.gen_goal_pose_list(
+                tgt_pos=tgt_pos,
+                tgt_vec=tgt_vec,
+                resolution=resolution,
+                angle_offset=angle_offset,
+            )
+        resolved_goal_pose_list = list(goal_pose_list)
+        if len(resolved_goal_pose_list) == 1 and resolution > 1:
+            goal_tf = self._pose_to_tf(resolved_goal_pose_list[0])
+            return self.gen_goal_pose_list(
+                tgt_pos=goal_tf[:3, 3],
+                tgt_vec=goal_tf[:3, 2],
+                resolution=resolution,
+                angle_offset=self._goal_pose_angle_offset(resolved_goal_pose_list[0]),
+            )
+        return resolved_goal_pose_list
+
+    def gen_pose_roll_candidates(self, pose, resolution=20):
+        if resolution <= 1:
+            goal_tf = self._pose_to_tf(pose)
+            return [(goal_tf[:3, 3].copy(), goal_tf[:3, :3].copy())]
+        goal_tf = self._pose_to_tf(pose)
+        return self.gen_goal_pose_list(
+            tgt_pos=goal_tf[:3, 3],
+            tgt_vec=goal_tf[:3, 2],
+            resolution=resolution,
+            angle_offset=self._goal_pose_angle_offset(pose),
+        )
+
     def reason_common_sids(self,
                            goal_pose_list,
                            place_depart_distance=0.1,
@@ -119,15 +170,13 @@ class ScrewPlanner(HierarchicalPlannerBase):
         if start_qs is None:
             start_qs = self.robot.qs.copy()
         start_state = self._compose_state(*self._split_state(start_qs))
-        if goal_pose_list is None:
-            if tgt_pos is None or tgt_vec is None:
-                raise ValueError('goal_pose_list or tgt_pos/tgt_vec is required')
-            goal_pose_list = self.gen_goal_pose_list(
-                tgt_pos=tgt_pos,
-                tgt_vec=tgt_vec,
-                resolution=resolution,
-                angle_offset=angle_offset,
-            )
+        goal_pose_list = self._resolve_goal_pose_list(
+            goal_pose_list=goal_pose_list,
+            tgt_pos=tgt_pos,
+            tgt_vec=tgt_vec,
+            resolution=resolution,
+            angle_offset=angle_offset,
+        )
         prefix_plan = None
         current_state = start_state
         home_state = self._home_state(

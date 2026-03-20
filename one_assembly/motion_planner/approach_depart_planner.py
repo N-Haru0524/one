@@ -1,6 +1,7 @@
 import one.motion.trajectory.cartesian as omtc
 import one.robots.manipulators.manipulator_base as orm
 import one.utils.math as oum
+import time
 
 from . import utils
 
@@ -14,6 +15,9 @@ class ADPlanner:
         self.pln_ctx = pln_ctx
         self._scratch_robot = robot.clone()
         self._last_plan_failure = None
+        self._timing_stats = {}
+        self._timing_events = []
+        self._metric_stats = {}
 
     def _clear_last_plan_failure(self):
         self._last_plan_failure = None
@@ -22,6 +26,57 @@ class ADPlanner:
         self._last_plan_failure = {
             'stage': stage,
             'reason': reason,
+        }
+
+    def _reset_timing_report(self):
+        self._timing_stats = {}
+        self._timing_events = []
+        self._metric_stats = {}
+
+    def _record_timing(self, label, duration):
+        stats = self._timing_stats.setdefault(
+            label,
+            {
+                'total_s': 0.0,
+                'count': 0,
+                'max_s': 0.0,
+            },
+        )
+        duration = float(duration)
+        stats['total_s'] += duration
+        stats['count'] += 1
+        stats['max_s'] = max(stats['max_s'], duration)
+        self._timing_events.append((label, duration))
+
+    def _record_metric(self, label, value):
+        stats = self._metric_stats.setdefault(
+            label,
+            {
+                'count': 0,
+                'sum': 0.0,
+                'min': None,
+                'max': None,
+                'last': None,
+            },
+        )
+        value = float(value)
+        stats['count'] += 1
+        stats['sum'] += value
+        stats['last'] = value
+        stats['min'] = value if stats['min'] is None else min(stats['min'], value)
+        stats['max'] = value if stats['max'] is None else max(stats['max'], value)
+
+    def timing_report(self):
+        return {
+            'stats': {
+                label: value.copy()
+                for label, value in self._timing_stats.items()
+            },
+            'events': list(self._timing_events),
+            'metrics': {
+                label: value.copy()
+                for label, value in self._metric_stats.items()
+            },
         }
 
     def _normalize_direction(self, rotmat, direction):
@@ -151,27 +206,31 @@ class ADPlanner:
         return pose_tf
 
     def _keyframe_motion_plan(self, state_list, pln_ctx=None, validate_edges=True, failure_stage='keyframe_path'):
-        if pln_ctx is None:
-            pln_ctx = self.pln_ctx
-        compact = []
-        for state in state_list:
-            if state is None:
-                continue
-            state = oum.np.asarray(state, dtype=oum.np.float32)
-            if len(compact) == 0 or not oum.np.allclose(compact[-1], state):
-                compact.append(state)
-        if not compact:
-            return None
-        for state in compact:
-            if not pln_ctx.is_state_valid(state):
-                self._set_last_plan_failure(failure_stage, 'state_in_collision')
+        start_time = time.perf_counter()
+        try:
+            if pln_ctx is None:
+                pln_ctx = self.pln_ctx
+            compact = []
+            for state in state_list:
+                if state is None:
+                    continue
+                state = oum.np.asarray(state, dtype=oum.np.float32)
+                if len(compact) == 0 or not oum.np.allclose(compact[-1], state):
+                    compact.append(state)
+            if not compact:
                 return None
-        if validate_edges and len(compact) > 1:
-            for qs0, qs1 in zip(compact[:-1], compact[1:]):
-                if not pln_ctx.is_motion_valid(qs0, qs1):
-                    self._set_last_plan_failure(failure_stage, 'path_in_collision')
+            for state in compact:
+                if not pln_ctx.is_state_valid(state):
+                    self._set_last_plan_failure(failure_stage, 'state_in_collision')
                     return None
-        return self._motion_plan(compact)
+            if validate_edges and len(compact) > 1:
+                for qs0, qs1 in zip(compact[:-1], compact[1:]):
+                    if not pln_ctx.is_motion_valid(qs0, qs1):
+                        self._set_last_plan_failure(failure_stage, 'path_in_collision')
+                        return None
+            return self._motion_plan(compact)
+        finally:
+            self._record_timing('ad.keyframe_motion_plan', time.perf_counter() - start_time)
 
     def _linear_motion_between_poses(self, start_pos, start_rotmat,
                                      goal_pos, goal_rotmat,
@@ -181,32 +240,36 @@ class ADPlanner:
                                      pos_step=0.01,
                                      rot_step=oum.np.deg2rad(2.0),
                                      max_edge_step=oum.pi / 180):
-        del max_edge_step
-        if pln_ctx is None:
-            pln_ctx = self.pln_ctx
-        seed_robot_qs, ee_qs = self._split_state(seed_qs, ee_values=ee_values)
-        q_seq, _ = omtc.cartesian_to_jtraj(
-            robot=self.robot,
-            start_rotmat=start_rotmat,
-            start_pos=start_pos,
-            goal_rotmat=goal_rotmat,
-            goal_pos=goal_pos,
-            pos_step=pos_step,
-            rot_step=rot_step,
-            ref_qs=seed_robot_qs,
-        )
-        if q_seq is None:
-            self._set_last_plan_failure('linear_ik', 'cartesian_ik_failed')
-            return None
-        q_list = [self._compose_state(qs, ee_qs) for qs in q_seq]
-        if not q_list or not pln_ctx.is_state_valid(q_list[0]):
-            self._set_last_plan_failure('linear_start', 'start_state_in_collision')
-            return None
-        for qs0, qs1 in zip(q_list[:-1], q_list[1:]):
-            if not pln_ctx.is_motion_valid(qs0, qs1):
-                self._set_last_plan_failure('linear_path', 'path_in_collision')
+        start_time = time.perf_counter()
+        try:
+            del max_edge_step
+            if pln_ctx is None:
+                pln_ctx = self.pln_ctx
+            seed_robot_qs, ee_qs = self._split_state(seed_qs, ee_values=ee_values)
+            q_seq, _ = omtc.cartesian_to_jtraj(
+                robot=self.robot,
+                start_rotmat=start_rotmat,
+                start_pos=start_pos,
+                goal_rotmat=goal_rotmat,
+                goal_pos=goal_pos,
+                pos_step=pos_step,
+                rot_step=rot_step,
+                ref_qs=seed_robot_qs,
+            )
+            if q_seq is None:
+                self._set_last_plan_failure('linear_ik', 'cartesian_ik_failed')
                 return None
-        return self._motion_plan(q_list)
+            q_list = [self._compose_state(qs, ee_qs) for qs in q_seq]
+            if not q_list or not pln_ctx.is_state_valid(q_list[0]):
+                self._set_last_plan_failure('linear_start', 'start_state_in_collision')
+                return None
+            for qs0, qs1 in zip(q_list[:-1], q_list[1:]):
+                if not pln_ctx.is_motion_valid(qs0, qs1):
+                    self._set_last_plan_failure('linear_path', 'path_in_collision')
+                    return None
+            return self._motion_plan(q_list)
+        finally:
+            self._record_timing('ad.linear_motion_between_poses', time.perf_counter() - start_time)
 
     def _linear_motion_to_pose(self, goal_tcp_pos, goal_tcp_rotmat,
                                direction=None,
@@ -266,7 +329,8 @@ class ADPlanner:
                               linear_granularity=0.03,
                               pln_ctx=None,
                               use_rrt=True,
-                              pln_jnt=False):
+                              pln_jnt=False,
+                              connect_timing_prefix='gen_approach_via_pose'):
         goal_tf = oum.np.asarray(goal_tf, dtype=oum.np.float32)
         via_tf = oum.np.asarray(via_tf, dtype=oum.np.float32)
         goal_robot_qs, resolved_final_ee_qs = self._split_state(goal_qs, ee_values=final_ee_qs)
@@ -305,6 +369,7 @@ class ADPlanner:
                     ee_values=resolved_via_ee_qs,
                     pln_ctx=pln_ctx,
                     use_rrt=use_rrt,
+                    timing_label=f'{connect_timing_prefix}.start_to_via',
                 )
                 if start2via is None:
                     return None
@@ -317,6 +382,7 @@ class ADPlanner:
                     ee_values=resolved_final_ee_qs,
                     pln_ctx=pln_ctx,
                     use_rrt=use_rrt,
+                    timing_label=f'{connect_timing_prefix}.end_to_goal',
                 )
                 if end_connect is None:
                     return None
@@ -344,6 +410,7 @@ class ADPlanner:
                 ee_values=resolved_via_ee_qs,
                 pln_ctx=pln_ctx,
                 use_rrt=use_rrt,
+                timing_label=f'{connect_timing_prefix}.start_to_via',
             )
             if start2via is None:
                 return None
@@ -357,6 +424,7 @@ class ADPlanner:
                 ee_values=resolved_final_ee_qs,
                 pln_ctx=pln_ctx,
                 use_rrt=use_rrt,
+                timing_label=f'{connect_timing_prefix}.end_to_goal',
             )
             if end_connect is None:
                 return None
@@ -370,34 +438,56 @@ class ADPlanner:
                         step_size=oum.pi / 36,
                         max_iters=2000,
                         time_limit=None,
-                        max_edge_step=oum.pi / 180):
-        if pln_ctx is None:
-            pln_ctx = self.pln_ctx
-        path = utils.plan_joint_path(
-            start_qs=self._compose_state(*self._split_state(start_qs, ee_values=ee_values)),
-            goal_qs=self._compose_state(*self._split_state(goal_qs, ee_values=ee_values)),
-            pln_ctx=pln_ctx,
-            use_rrt=use_rrt,
-            step_size=step_size,
-            max_iters=max_iters,
-            time_limit=time_limit,
-        )
-        if path is None:
-            return None
-        path = [oum.np.asarray(qs, dtype=oum.np.float32) for qs in path]
-        expected_start = self._compose_state(*self._split_state(start_qs, ee_values=ee_values))
-        expected_goal = self._compose_state(*self._split_state(goal_qs, ee_values=ee_values))
-        forward_error = (
-            pln_ctx.distance(path[0], expected_start) +
-            pln_ctx.distance(path[-1], expected_goal)
-        )
-        reverse_error = (
-            pln_ctx.distance(path[0], expected_goal) +
-            pln_ctx.distance(path[-1], expected_start)
-        )
-        if reverse_error < forward_error:
-            path = list(reversed(path))
-        return self._motion_plan(path)
+                        max_edge_step=oum.pi / 180,
+                        timing_label=None):
+        start_time = time.perf_counter()
+        connect_label = 'ad.connect_motion' if timing_label is None else f'ad.connect_motion.{timing_label}'
+        rrt_label = 'joint_path.rrt_connect.solve' if timing_label is None else f'joint_path.rrt_connect.solve.{timing_label}'
+        try:
+            if pln_ctx is None:
+                pln_ctx = self.pln_ctx
+            rrt_pln_ctx = utils.all_inclusive_mujoco_pln_ctx(pln_ctx) if use_rrt else pln_ctx
+            expected_start = self._compose_state(*self._split_state(start_qs, ee_values=ee_values))
+            expected_goal = self._compose_state(*self._split_state(goal_qs, ee_values=ee_values))
+            connect_distance = float(pln_ctx.distance(expected_start, expected_goal))
+            if timing_label is not None:
+                self._record_metric(f'ad.connect_metric.{timing_label}.distance', connect_distance)
+                direct_check_start = time.perf_counter()
+                direct_path = utils.interpolate_qs(expected_start, expected_goal, step_size=step_size)
+                direct_valid = utils.path_is_valid(direct_path, rrt_pln_ctx)
+                self._record_timing(
+                    f'ad.connect_motion.{timing_label}.direct_interp_check',
+                    time.perf_counter() - direct_check_start,
+                )
+                self._record_metric(f'ad.connect_metric.{timing_label}.direct_interp_valid', 1.0 if direct_valid else 0.0)
+                self._record_metric(f'ad.connect_metric.{timing_label}.direct_interp_points', len(direct_path))
+            path = utils.plan_joint_path(
+                start_qs=expected_start,
+                goal_qs=expected_goal,
+                pln_ctx=rrt_pln_ctx,
+                use_rrt=use_rrt,
+                step_size=step_size,
+                max_iters=max_iters,
+                time_limit=time_limit,
+                timing_hook=self._record_timing,
+                timing_label=rrt_label,
+            )
+            if path is None:
+                return None
+            path = [oum.np.asarray(qs, dtype=oum.np.float32) for qs in path]
+            forward_error = (
+                pln_ctx.distance(path[0], expected_start) +
+                pln_ctx.distance(path[-1], expected_goal)
+            )
+            reverse_error = (
+                pln_ctx.distance(path[0], expected_goal) +
+                pln_ctx.distance(path[-1], expected_start)
+            )
+            if reverse_error < forward_error:
+                path = list(reversed(path))
+            return self._motion_plan(path)
+        finally:
+            self._record_timing(connect_label, time.perf_counter() - start_time)
 
     def _merge_plans(self, first, second):
         if first is None or second is None:
