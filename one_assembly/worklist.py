@@ -25,7 +25,7 @@ class LayoutEntry:
 
 @dataclass(frozen=True)
 class LayoutSpec:
-    base_mesh_file: str
+    base_mesh_file: Optional[str]
     base_pos_offset: np.ndarray
     base_rotmat: np.ndarray
     screw_origin: np.ndarray
@@ -61,16 +61,19 @@ class WorkList:
                  rotmat=None,
                  yamlpath=None,
                  meshpath=None,
+                 grasp_path=None,
                  alpha=1.0,
                  collision_type=ouc.CollisionType.AABB):
         default_root = _default_root_dir()
         yamlpath = yamlpath or os.path.join(default_root, 'yamls')
         meshpath = meshpath or os.path.join(default_root, 'meshes')
+        grasp_path = grasp_path or os.path.join(default_root, 'grasps')
         if rotmat is None:
             rotmat = oum.rotmat_from_euler(np.pi / 2, 0, 0, order='rxyz')
 
         self.yamlpath = yamlpath
         self.meshpath = meshpath
+        self.grasp_path = grasp_path
         self.pos = np.asarray(pos, dtype=np.float32)
         self.rotmat = np.asarray(rotmat, dtype=np.float32)
         self.alpha = float(alpha)
@@ -102,6 +105,7 @@ class WorkList:
                 rotmat=self.rotmat,
                 yamlpath=self.yamlpath,
                 meshpath=self.meshpath,
+                grasp_path=self.grasp_path,
                 obj_num=idx,
                 rgb=color,
                 alpha=alpha,
@@ -156,9 +160,10 @@ class WorkList:
                     rotmat=_as_rotmat(part_data.get('rotmat', np.eye(3, dtype=np.float32)),
                                       field_name=f'{layout_name}.{part_key}.rotmat')))
 
-            base_mesh = str(work_base_data.get('mesh', 'work_base.stl'))
+            base_mesh_value = work_base_data.get('mesh', 'work_base.stl')
+            base_mesh = None if base_mesh_value in (None, '') else str(base_mesh_value)
             layout_specs[layout_name] = LayoutSpec(
-                base_mesh_file=os.path.join(self.meshpath, base_mesh),
+                base_mesh_file=None if base_mesh is None else os.path.join(self.meshpath, base_mesh),
                 base_pos_offset=_as_vec3(work_base_data.get('pos', [0.0, 0.0, 0.0]),
                                          field_name=f'{layout_name}.work_base.pos'),
                 base_rotmat=_as_rotmat(work_base_data.get('rotmat', np.eye(3, dtype=np.float32)),
@@ -226,9 +231,11 @@ class WorkList:
         if self.layout_name is None:
             raise ValueError('Cannot create work base before a layout is selected')
         work_base_file = self.layout_specs[self.layout_name].base_mesh_file
+        if not work_base_file or not os.path.isfile(work_base_file):
+            return None
         self.work_base = osso.SceneObject.from_file(
             work_base_file,
-            collision_type=ouc.CollisionType.AABB,
+            collision_type=self.collision_type,
             rgb=ouc.ExtendedColor.BEIGE,
             alpha=1.0)
         return self.work_base
@@ -243,8 +250,9 @@ class WorkList:
 
         base_pos = self._base_pos(layout)
         work_base = self._ensure_work_base()
-        work_base.pos = base_pos
-        work_base.rotmat = self.rotmat @ layout.base_rotmat
+        if work_base is not None:
+            work_base.pos = base_pos
+            work_base.rotmat = self.rotmat @ layout.base_rotmat
 
         for entry in layout.part_entries:
             if entry.work_idx >= len(self.work):
@@ -253,8 +261,12 @@ class WorkList:
                 part_pos = self.rotmat @ entry.pos + self.pos
                 part_rotmat = self.rotmat @ entry.rotmat
             else:
-                part_pos = work_base.rotmat @ entry.pos + work_base.pos
-                part_rotmat = work_base.rotmat @ entry.rotmat
+                if work_base is None:
+                    part_pos = self.rotmat @ entry.pos + self.pos
+                    part_rotmat = self.rotmat @ entry.rotmat
+                else:
+                    part_pos = work_base.rotmat @ entry.pos + work_base.pos
+                    part_rotmat = work_base.rotmat @ entry.rotmat
             self.work[entry.work_idx].set_pose(part_pos, part_rotmat)
 
     def init_pos(self, seed=0):
@@ -306,6 +318,7 @@ class WorkList:
             rotmat=self.rotmat.copy(),
             yamlpath=self.yamlpath,
             meshpath=self.meshpath,
+            grasp_path=self.grasp_path,
             alpha=alpha,
             collision_type=self.collision_type)
         part_poses = self.current_part_poses()

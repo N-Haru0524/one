@@ -7,6 +7,8 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 import yaml
 
+import one.geom.loader as ogl
+import one.scene.render_model as osrm
 import one.scene.scene_object as osso
 import one.utils.constant as ouc
 import one.utils.math as oum
@@ -18,7 +20,7 @@ Pose = Tuple[np.ndarray, np.ndarray]
 
 
 def _default_asset_root() -> str:
-    asset_root = os.path.join(os.path.dirname(__file__), 'worklists', 'electric_assembly')
+    asset_root = os.path.join(os.path.dirname(__file__), 'worklists', 'move_object')
     if not os.path.isdir(asset_root):
         raise FileNotFoundError(f'Assembly asset root not found: {asset_root}')
     return asset_root
@@ -40,6 +42,7 @@ class WorkSpec:
     mesh_path: str
     grasp_path: str
     mesh_file: str
+    mesh_files: Tuple[str, ...]
     grasp_file: str
 
 
@@ -57,7 +60,11 @@ class Work:
         default_root = _default_asset_root()
         yamlpath = yamlpath or os.path.join(default_root, 'yamls')
         meshpath = meshpath or os.path.join(default_root, 'meshes')
-        grasp_path = grasp_path or os.path.join(default_root, 'pickles')
+        if grasp_path is None:
+            default_grasp_path = os.path.join(default_root, 'pickles')
+            if not os.path.isdir(default_grasp_path):
+                default_grasp_path = os.path.join(default_root, 'grasps')
+            grasp_path = default_grasp_path
 
         self.obj_num = int(obj_num)
         self.home_pos = np.asarray(pos, dtype=np.float32)
@@ -81,8 +88,8 @@ class Work:
         self.rotmat = [step.rel_rotmat.copy() for step in self.steps]
 
         self.grasp_collection = self._load_grasps(self.spec.grasp_file)
-        self.model = osso.SceneObject.from_file(
-            self.spec.mesh_file,
+        self.model = self._build_model(
+            mesh_files=self.spec.mesh_files,
             collision_type=collision_type,
             rgb=rgb,
             alpha=alpha)
@@ -124,8 +131,18 @@ class Work:
                 rel_rotmat=rel_rotmat,
                 immediate=bool(step_data.get('immediate', False))))
 
-        mesh_file = os.path.join(meshpath, f'{name}.stl')
+        mesh_files_raw = raw.get('mesh_files')
+        if mesh_files_raw is None:
+            mesh_files = (os.path.join(meshpath, f'{name}.stl'),)
+        else:
+            if not isinstance(mesh_files_raw, (list, tuple)) or len(mesh_files_raw) == 0:
+                raise ValueError(f'mesh_files must be a non-empty list in {yaml_file}')
+            mesh_files = tuple(os.path.join(meshpath, str(mesh_name)) for mesh_name in mesh_files_raw)
+        mesh_file = mesh_files[0]
         grasp_file = os.path.join(grasp_path, f'{name}.pickle')
+        npz_grasp_file = os.path.join(grasp_path, f'{name}.npz')
+        if os.path.exists(npz_grasp_file):
+            grasp_file = npz_grasp_file
         return WorkSpec(
             name=name,
             steps=tuple(steps),
@@ -133,12 +150,56 @@ class Work:
             mesh_path=meshpath,
             grasp_path=grasp_path,
             mesh_file=mesh_file,
+            mesh_files=mesh_files,
             grasp_file=grasp_file)
+
+    @staticmethod
+    def _build_model(mesh_files, collision_type, rgb, alpha):
+        if len(mesh_files) == 1:
+            return osso.SceneObject.from_file(
+                mesh_files[0],
+                collision_type=collision_type,
+                rgb=rgb,
+                alpha=alpha)
+        model = osso.SceneObject(collision_type=collision_type)
+        for mesh_file in mesh_files:
+            model.file_path = mesh_file
+            model.add_visual(
+                osrm.RenderModel(
+                    geom=ogl.load_geometry(mesh_file),
+                    rgb=rgb,
+                    alpha=alpha),
+                auto_make_collision=True)
+        return model
 
     @staticmethod
     def _load_grasps(grasp_file: str):
         if not os.path.exists(grasp_file):
             return None
+        if grasp_file.endswith('.npz'):
+            try:
+                grasp_data = np.load(grasp_file, allow_pickle=True)
+            except OSError:
+                return None
+            required = {'pose', 'pre_pose', 'jaw_width', 'score'}
+            if not required.issubset(grasp_data.files):
+                return None
+            pose_arr = np.asarray(grasp_data['pose'], dtype=np.float32)
+            pre_pose_arr = np.asarray(grasp_data['pre_pose'], dtype=np.float32)
+            jaw_width_arr = np.asarray(grasp_data['jaw_width'], dtype=np.float32).reshape(-1)
+            score_arr = np.asarray(grasp_data['score'], dtype=np.float32).reshape(-1)
+            if not (len(pose_arr) == len(pre_pose_arr) == len(jaw_width_arr) == len(score_arr)):
+                return None
+            grasp_collection = []
+            for pose_tf, pre_pose_tf, jaw_width, score in zip(
+                    pose_arr, pre_pose_arr, jaw_width_arr, score_arr):
+                grasp_collection.append((
+                    np.asarray(pose_tf, dtype=np.float32),
+                    np.asarray(pre_pose_tf, dtype=np.float32),
+                    float(jaw_width),
+                    float(score),
+                ))
+            return grasp_collection
         try:
             with open(grasp_file, 'rb') as f:
                 return pickle.load(f)
