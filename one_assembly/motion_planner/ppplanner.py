@@ -1,6 +1,7 @@
 from collections import Counter
 import time
 
+import one.motion.trajectory.cartesian as omtc
 import one.utils.math as oum
 
 from . import utils
@@ -8,6 +9,66 @@ from .hierarchical import HierarchicalPlannerBase
 
 
 class PickPlacePlanner(HierarchicalPlannerBase):
+    def _needs_prefix_start_depart(self, start_qs):
+        start_robot_qs, _start_ee_qs = self._split_state(start_qs)
+        home_qs = getattr(self.robot, 'home_qs', None)
+        if home_qs is None:
+            return False
+        home_qs = oum.np.asarray(home_qs, dtype=oum.np.float32)
+        return not oum.np.allclose(start_robot_qs, home_qs)
+
+    def _prefix_start_depart(self, start_qs, ee_qs, linear_granularity, toggle_dbg=False):
+        start_robot_qs, start_ee_qs = self._split_state(start_qs, ee_values=ee_qs)
+        home_qs = getattr(self.robot, 'home_qs', None)
+        if home_qs is None:
+            if toggle_dbg:
+                print('[pickmove_prefix] skipped: robot has no home_qs')
+            return None
+        home_qs = oum.np.asarray(home_qs, dtype=oum.np.float32)
+        if oum.np.allclose(start_robot_qs, home_qs):
+            if toggle_dbg:
+                print('[pickmove_prefix] skipped: start_qs already at home_qs')
+            return None
+        start_state = self._compose_state(start_robot_qs, start_ee_qs)
+        start_tcp_pos, start_tcp_rotmat = self._tcp_pose_from_qs(start_state)
+        depart_tf = self._offset_pose_tf(
+            goal_tcp_pos=start_tcp_pos,
+            goal_tcp_rotmat=start_tcp_rotmat,
+            distance=0.07,
+            motion_type='sink',
+        )
+        q_seq, _ = omtc.cartesian_to_jtraj(
+            robot=self.robot,
+            start_rotmat=start_tcp_rotmat,
+            start_pos=start_tcp_pos,
+            goal_rotmat=depart_tf[:3, :3],
+            goal_pos=depart_tf[:3, 3],
+            pos_step=linear_granularity,
+            rot_step=oum.np.deg2rad(2.0),
+            ref_qs=start_robot_qs,
+        )
+        if q_seq is None:
+            self._set_last_plan_failure('prefix_depart_ik', 'cartesian_ik_failed')
+            depart_plan = None
+        else:
+            depart_plan = self._motion_plan([
+                self._compose_state(qs, start_ee_qs)
+                for qs in q_seq
+            ])
+        if toggle_dbg:
+            if depart_plan is None:
+                failure = self._last_plan_failure
+                if failure is None:
+                    print('[pickmove_prefix] failed: linear depart unavailable')
+                else:
+                    print(
+                        '[pickmove_prefix] failed: '
+                        f'{failure["stage"]} {failure["reason"]}'
+                    )
+            else:
+                print(f'[pickmove_prefix] planned: waypoints={len(depart_plan.qs_list)}')
+        return depart_plan
+
     def reason_common_grasp_ids(self,
                                 obj_model,
                                 grasp_collection,
@@ -396,16 +457,33 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             self._release_mounted_objects()
             open_ee_qs = self._max_open_ee_qs()
             prepend_release = False
+            prefix_depart_plan = None
             if open_ee_qs is not None:
                 _start_robot_qs, start_ee_qs = self._split_state(start_qs, ee_values=open_ee_qs)
                 if start_ee_qs is not None and not oum.np.allclose(start_ee_qs, open_ee_qs):
                     prepend_release = True
                 start_qs = self._compose_with_ee_qs(start_qs, open_ee_qs)
+            require_prefix_depart = self._needs_prefix_start_depart(start_qs)
+            prefix_depart_plan = self._prefix_start_depart(
+                start_qs=start_qs,
+                ee_qs=open_ee_qs,
+                linear_granularity=linear_granularity,
+                toggle_dbg=toggle_dbg,
+            )
+            if require_prefix_depart and prefix_depart_plan is None:
+                self._set_last_plan_failure('prefix_depart', 'required_depart_failed')
+                if toggle_dbg:
+                    print('[pickmove_prefix] required depart missing, aborting pick plan')
+                return None
+            if prefix_depart_plan is None:
+                current_start_qs = start_qs
+            else:
+                current_start_qs = prefix_depart_plan.qs_list[-1]
             if self._grasp_has_collision(grasp):
                 if toggle_dbg:
                     print(f'[pickmove_pick gid={gid}] skipped grasp_collision=1')
                 return None
-            start_robot_qs, _start_ee_qs = self._split_state(start_qs)
+            start_robot_qs, _start_ee_qs = self._split_state(current_start_qs)
             pick_pln_ctx = self._filtered_pln_ctx(exclude_entities=[obj_model])
             hold_pln_ctx = self._hold_pln_ctx(
                 obj_model=obj_model,
@@ -435,7 +513,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                     print(f'[pickmove_pick gid={gid}] removed_no_ik=1')
             if pick_goal is None:
                 return None
-            current_state = self._compose_state(*self._split_state(start_qs, ee_values=ee_qs))
+            current_state = self._compose_state(*self._split_state(current_start_qs, ee_values=ee_qs))
             pick_plan_start_time = time.perf_counter()
             pick_plan = self.gen_approach_via_pose(
                 goal_tf=pick_tf,
@@ -488,6 +566,8 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 return None
 
             full_pick_plan = self._merge_plans(pick_plan, pick_depart_plan)
+            if prefix_depart_plan is not None:
+                full_pick_plan = self._merge_plans(prefix_depart_plan, full_pick_plan)
             moveto_plan = utils.MotionData([full_pick_plan.qs_list[-1]])
             current_state = full_pick_plan.qs_list[-1]
             for goal_idx, goal_pose in enumerate(goal_pose_list):
@@ -547,6 +627,8 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             full_plan = full_pick_plan.copy()
             full_plan.extend(moveto_plan.qs_list[1:])
             attach_idx = len(pick_plan.qs_list) - 1
+            if prefix_depart_plan is not None:
+                attach_idx += len(prefix_depart_plan.qs_list) - 1
             if prepend_release and open_ee_qs is not None:
                 full_plan.events['pre_release'] = 0
             full_plan.events['attach'] = attach_idx

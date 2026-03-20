@@ -542,7 +542,7 @@ class ADPlanner:
             ref_qs=ref_qs,
             pln_ctx=pln_ctx,
             granularity=granularity,
-            motion_type='source',
+            motion_type='sink',
         )
 
     def gen_approach(self,
@@ -706,7 +706,7 @@ class ADPlanner:
                     goal_tcp_rotmat=goal_tcp_rotmat,
                     direction=depart_direction,
                     distance=depart_distance,
-                    motion_type='source',
+                    motion_type='sink',
                 )
                 ref_qs = goal_qs[:self.robot.ndof]
                 depart_state = self._solve_pose_state(
