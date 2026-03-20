@@ -34,6 +34,7 @@ class SceneObject:
         self._com = None
         self._mass = None
         self._is_free = is_free
+        self._collision_group_override = None
         self._collision_type = collision_type  # None means no auto collider generation
         self._update_collision_group()
         self._collision_affinity_override = None
@@ -64,6 +65,8 @@ class SceneObject:
         new.set_rotmat_pos(rotmat=self.rotmat,
                            pos=self.pos)
         new.set_inertia(self._inrtmat, self._com, self._mass)
+        new._collision_group_override = self._collision_group_override
+        new._collision_affinity_override = self._collision_affinity_override
         # clone all visuals
         for m in self.visuals:
             new.add_visual(m.clone(), auto_make_collision=False)
@@ -82,13 +85,19 @@ class SceneObject:
 
     @property
     def collision_group(self):
+        if self._collision_group_override is not None:
+            return int(self._collision_group_override)
         return self._collision_group
+
+    @collision_group.setter
+    def collision_group(self, group):
+        self._collision_group_override = int(group)
 
     @property
     def collision_affinity(self):
         if self._collision_affinity_override is not None:
             return int(self._collision_affinity_override)
-        return int(ouc.CollisionMatrix.DEFAULT[self._collision_group])
+        return int(ouc.CollisionMatrix.DEFAULT[self.collision_group])
 
     @collision_affinity.setter
     def collision_affinity(self, mask):

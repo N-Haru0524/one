@@ -1,3 +1,6 @@
+import os
+import struct
+
 import numpy as np
 import one.utils.math as oum
 import one.utils.constant as ouc
@@ -8,12 +11,15 @@ import one.physics.mj_nodes as opmno
 import one.physics.mj_naming as opmna
 
 
+_MUJOCO_MAX_STL_FACES = 200000
+
+
 class MJOneConverter:
 
     def __init__(self, margin=0.0):
         self._opt = opmno.OptionNode()
         self._opt.gravity = (0, 0, -9.81)
-        self._opt.timestep = 0.002
+        self._opt.timestep = 0.0001
         self._default = opmno.DefaultNode()
         # self._default.geom["friction"] = (1.0, 0.1, 0.1)
         self._default.geom["margin"] = margin
@@ -192,14 +198,54 @@ class MJOneConverter:
             g.size = (1.0, 1.0, 0.1)
         elif isinstance(c, sco.MeshCollisionShape):
             g.gtype = "mesh"
-            if c.file_path not in self._mesh_assets:
+            mesh_path = self._validate_mujoco_mesh_path(c.file_path)
+            if mesh_path not in self._mesh_assets:
                 name = f"mesh_{len(self._mesh_assets)}"
-                self._mesh_assets[c.file_path] = opmno.MeshAsset(
-                    name=name, path=c.file_path)
-            g.mesh_ref = self._mesh_assets[c.file_path]
+                self._mesh_assets[mesh_path] = opmno.MeshAsset(
+                    name=name, path=mesh_path)
+            g.mesh_ref = self._mesh_assets[mesh_path]
         else:
             raise NotImplementedError(f"Unsupported collision: {type(c)}")
         return g
+
+    def _validate_mujoco_mesh_path(self, file_path):
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext != '.stl':
+            return file_path
+        stl_kind, face_count = self._inspect_stl(file_path)
+        issues = []
+        if stl_kind == 'ascii':
+            issues.append('ASCII STL is not accepted by this MuJoCo import path')
+        if face_count is not None and face_count > _MUJOCO_MAX_STL_FACES:
+            issues.append(
+                f'{face_count} faces exceeds MuJoCo STL limit {_MUJOCO_MAX_STL_FACES}')
+        if not issues:
+            return file_path
+        issue_text = '; '.join(issues)
+        raise ValueError(
+            f'MuJoCo cannot import mesh "{file_path}": {issue_text}. '
+            'Convert the mesh to binary STL and/or decimate it below 200000 faces, '
+            'or run this scene with non-mesh collisions such as '
+            '--collision-type aabb or --collision-type obb.')
+
+    @staticmethod
+    def _inspect_stl(file_path):
+        with open(file_path, 'rb') as f:
+            f.read(80)
+            tri_count_bytes = f.read(4)
+        if len(tri_count_bytes) < 4:
+            raise ValueError(f'Invalid STL file: {file_path}')
+        tri_count = struct.unpack('<I', tri_count_bytes)[0]
+        file_size = os.path.getsize(file_path)
+        expected_size = 84 + tri_count * 50
+        if file_size == expected_size:
+            return 'binary', tri_count
+        face_count = 0
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                if line.lstrip().startswith('facet normal'):
+                    face_count += 1
+        return 'ascii', face_count
 
     def _collect_mounted_children(self, mecba):
         for m in mecba._mountings.values():
