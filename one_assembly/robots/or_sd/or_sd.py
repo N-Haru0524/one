@@ -60,6 +60,13 @@ class ORSD(oreb.EndEffectorBase, oreb.PointMixin):
         tcp_pos = self.tcp_pos + oum.vec(shank_len, 0, 0)
         self._loc_tcp_tf[:] = oum.tf_from_rotmat_pos(self.tcp_rotmat, tcp_pos)
         return result
+
+    def clone(self):
+        new = super().clone()
+        new.tcp_pos = self.tcp_pos.copy()
+        new.tcp_rotmat = self.tcp_rotmat.copy()
+        new.shank_range = self.shank_range.copy()
+        return new
         
     def set_shank_len(self, length):
         if length < self.shank_range[0] or length > self.shank_range[1]:
