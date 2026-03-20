@@ -51,7 +51,7 @@ def visualize_grasps(mesh_path, grasps, max_visualized):
         cam_lookat_pos=(0.0, 0.0, 0.0),
         toggle_auto_cam_orbit=True,
     )
-    ossop.frame().attach_to(base.scene)
+    ossop.frame(radius_scale=0.3).attach_to(base.scene)
 
     target = osso.SceneObject.from_file(
         mesh_path,

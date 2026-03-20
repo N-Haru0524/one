@@ -163,8 +163,6 @@ def visualize_action_results(base, worklist, action_view='ghost'):
             ghost.attach_to(base.scene)
             if action_view == 'state' and step.action_type != 'screw':
                 start_pose = pose
-
-
 def main():
     args = parse_args()
 
@@ -176,7 +174,7 @@ def main():
     builtins.base = base
     ossop.frame(ax_length=0.05).attach_to(base.scene)
 
-    worklist = WorkList()
+    worklist = WorkList(collision_type=ouc.CollisionType.MESH)
     worklist.init_pose(seed=args.layout)
     worklist.attach_to(base.scene)
     # if worklist.work_base is not None:
