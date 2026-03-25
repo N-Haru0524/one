@@ -53,13 +53,13 @@ class Work:
                  collision_type=ouc.CollisionType.AABB,
                  rgb=ouc.ExtendedColor.STEEL_GRAY,
                  alpha=1.0,
-                 yamlpath=None,
-                 meshpath=None,
+                 yaml_path=None,
+                 mesh_path=None,
                  grasp_path=None,
                  obj_num=0):
         default_root = _default_asset_root()
-        yamlpath = yamlpath or os.path.join(default_root, 'yamls')
-        meshpath = meshpath or os.path.join(default_root, 'meshes')
+        yaml_path = yaml_path or os.path.join(default_root, 'yamls')
+        mesh_path = mesh_path or os.path.join(default_root, 'meshes')
         if grasp_path is None:
             default_grasp_path = os.path.join(default_root, 'pickles')
             if not os.path.isdir(default_grasp_path):
@@ -70,13 +70,13 @@ class Work:
         self.home_pos = np.asarray(pos, dtype=np.float32)
         self.home_rotmat = np.asarray(rotmat, dtype=np.float32)
         self.spec = self._load_spec(
-            yamlpath=yamlpath,
-            meshpath=meshpath,
+            yaml_path=yaml_path,
+            mesh_path=mesh_path,
             grasp_path=grasp_path,
             obj_num=self.obj_num)
 
-        self.yamlpath = self.spec.yaml_path
-        self.meshpath = self.spec.mesh_path
+        self.yaml_path = self.spec.yaml_path
+        self.mesh_path = self.spec.mesh_path
         self.grasp_path = self.spec.grasp_path
         self.name = self.spec.name
         self.steps = list(self.spec.steps)
@@ -96,11 +96,11 @@ class Work:
         self.reset_pose()
 
     @staticmethod
-    def _load_spec(yamlpath: str,
-                   meshpath: str,
+    def _load_spec(yaml_path: str,
+                   mesh_path: str,
                    grasp_path: str,
                    obj_num: int) -> WorkSpec:
-        yaml_file = os.path.join(yamlpath, f'object{obj_num}.yaml')
+        yaml_file = os.path.join(yaml_path, f'object{obj_num}.yaml')
         with open(yaml_file, 'r', encoding='utf-8') as f:
             raw = yaml.safe_load(f) or {}
 
@@ -133,11 +133,11 @@ class Work:
 
         mesh_files_raw = raw.get('mesh_files')
         if mesh_files_raw is None:
-            mesh_files = (os.path.join(meshpath, f'{name}.stl'),)
+            mesh_files = (os.path.join(mesh_path, f'{name}.stl'),)
         else:
             if not isinstance(mesh_files_raw, (list, tuple)) or len(mesh_files_raw) == 0:
                 raise ValueError(f'mesh_files must be a non-empty list in {yaml_file}')
-            mesh_files = tuple(os.path.join(meshpath, str(mesh_name)) for mesh_name in mesh_files_raw)
+            mesh_files = tuple(os.path.join(mesh_path, str(mesh_name)) for mesh_name in mesh_files_raw)
         mesh_file = mesh_files[0]
         grasp_file = os.path.join(grasp_path, f'{name}.pickle')
         npz_grasp_file = os.path.join(grasp_path, f'{name}.npz')
@@ -146,8 +146,8 @@ class Work:
         return WorkSpec(
             name=name,
             steps=tuple(steps),
-            yaml_path=yamlpath,
-            mesh_path=meshpath,
+            yaml_path=yaml_path,
+            mesh_path=mesh_path,
             grasp_path=grasp_path,
             mesh_file=mesh_file,
             mesh_files=mesh_files,

@@ -59,20 +59,20 @@ class WorkList:
     def __init__(self,
                  pos=np.array([0.0, 0.0, 0.0], dtype=np.float32),
                  rotmat=None,
-                 yamlpath=None,
-                 meshpath=None,
+                 yaml_path=None,
+                 mesh_path=None,
                  grasp_path=None,
                  alpha=1.0,
                  collision_type=ouc.CollisionType.AABB):
         default_root = _default_root_dir()
-        yamlpath = yamlpath or os.path.join(default_root, 'yamls')
-        meshpath = meshpath or os.path.join(default_root, 'meshes')
+        yaml_path = yaml_path or os.path.join(default_root, 'yamls')
+        mesh_path = mesh_path or os.path.join(default_root, 'meshes')
         grasp_path = grasp_path or os.path.join(default_root, 'grasps')
         if rotmat is None:
             rotmat = oum.rotmat_from_euler(np.pi / 2, 0, 0, order='rxyz')
 
-        self.yamlpath = yamlpath
-        self.meshpath = meshpath
+        self.yaml_path = yaml_path
+        self.mesh_path = mesh_path
         self.grasp_path = grasp_path
         self.pos = np.asarray(pos, dtype=np.float32)
         self.rotmat = np.asarray(rotmat, dtype=np.float32)
@@ -103,8 +103,8 @@ class WorkList:
             work_items.append(Work(
                 pos=self.pos,
                 rotmat=self.rotmat,
-                yamlpath=self.yamlpath,
-                meshpath=self.meshpath,
+                yaml_path=self.yaml_path,
+                mesh_path=self.mesh_path,
                 grasp_path=self.grasp_path,
                 obj_num=idx,
                 rgb=color,
@@ -113,10 +113,10 @@ class WorkList:
         return work_items
 
     def _discover_object_indices(self) -> List[int]:
-        if not os.path.isdir(self.yamlpath):
+        if not os.path.isdir(self.yaml_path):
             return list(range(6))
         object_indices = []
-        for file_name in os.listdir(self.yamlpath):
+        for file_name in os.listdir(self.yaml_path):
             if not file_name.startswith('object') or not file_name.endswith('.yaml'):
                 continue
             suffix = file_name[len('object'):-len('.yaml')]
@@ -126,7 +126,7 @@ class WorkList:
         return sorted(object_indices)
 
     def _layout_file_path(self) -> str:
-        return os.path.join(self.yamlpath, 'layouts.yaml')
+        return os.path.join(self.yaml_path, 'layouts.yaml')
 
     def _load_layout_specs(self) -> Dict[str, LayoutSpec]:
         layout_file = self._layout_file_path()
@@ -163,7 +163,7 @@ class WorkList:
             base_mesh_value = work_base_data.get('mesh', 'work_base.stl')
             base_mesh = None if base_mesh_value in (None, '') else str(base_mesh_value)
             layout_specs[layout_name] = LayoutSpec(
-                base_mesh_file=None if base_mesh is None else os.path.join(self.meshpath, base_mesh),
+                base_mesh_file=None if base_mesh is None else os.path.join(self.mesh_path, base_mesh),
                 base_pos_offset=_as_vec3(work_base_data.get('pos', [0.0, 0.0, 0.0]),
                                          field_name=f'{layout_name}.work_base.pos'),
                 base_rotmat=_as_rotmat(work_base_data.get('rotmat', np.eye(3, dtype=np.float32)),
@@ -316,8 +316,8 @@ class WorkList:
         copied = WorkList(
             pos=self.pos.copy(),
             rotmat=self.rotmat.copy(),
-            yamlpath=self.yamlpath,
-            meshpath=self.meshpath,
+            yaml_path=self.yaml_path,
+            mesh_path=self.mesh_path,
             grasp_path=self.grasp_path,
             alpha=alpha,
             collision_type=self.collision_type)
