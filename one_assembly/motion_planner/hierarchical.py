@@ -758,6 +758,15 @@ class HierarchicalPlannerBase(ADPlanner):
                 coarse_collision_elapsed += time.perf_counter() - coarse_collision_start_time
                 if not is_coarse_valid:
                     stats['rejected_coarse_collision'] = 1
+                    if diagnose_collision_pairs and not stats['collision_pairs']:
+                        coarse_diag_ctx = utils.all_inclusive_mujoco_pln_ctx(coarse_pln_ctx)
+                        ranked_pairs, contact_points = self._contact_snapshot_for_state(
+                            coarse_diag_ctx,
+                            combined_qs,
+                        )
+                        stats['collision_pairs'] = ranked_pairs
+                        if debug_visualize_contacts:
+                            self._debug_attach_contact_points(contact_points, rgb=debug_contact_rgb)
                     continue
             goal_collision_start_time = time.perf_counter()
             is_state_valid = plan_pln_ctx.is_state_valid(combined_qs)

@@ -1,6 +1,7 @@
 import argparse
 import builtins
 import sys
+import os
 from pathlib import Path
 
 import numpy as np
@@ -78,10 +79,14 @@ def resolve_collision_type(label):
 
 
 def build_worklist(collision_type, use_visual_offset=True):
+    root_path = os.path.join('/home/wrs/nagai/one/one_assembly/worklists/move_object')
+    yaml_path = os.path.join(root_path, 'yamls')
+    mesh_path = os.path.join(root_path, 'meshes')
+    grasp_path = os.path.join(root_path, 'grasps')
     if use_visual_offset:
         pos = np.array([0.2 + 0.09 + 0.035, 0.0, 0.11 + 0.018 + 0.0902], dtype=np.float32)
-        return WorkList(pos=pos, collision_type=collision_type)
-    return WorkList(collision_type=collision_type)
+        return WorkList(pos=pos, collision_type=collision_type, yaml_path=yaml_path, mesh_path=mesh_path, grasp_path=grasp_path)
+    return WorkList(collision_type=collision_type, yaml_path=yaml_path, mesh_path=mesh_path, grasp_path=grasp_path)
 
 
 def scene_items(worklist):
@@ -204,12 +209,12 @@ def main():
 
     if args.show_collision:
         base = ovw.World(
-            cam_pos=(0.55, 0.45, 0.35),
-            cam_lookat_pos=(0.18, 0.0, 0.02),
+            cam_pos=(1,-1,1),
+            cam_lookat_pos=(0,0,0.5),
             toggle_auto_cam_orbit=False,
         )
         builtins.base = base
-        ossop.frame(ax_length=0.05).attach_to(base.scene)
+        # ossop.frame(ax_length=0.05).attach_to(base.scene)
         set_collision_rendering(worklist, flag=True)
         worklist.attach_to(base.scene)
         markers = attach_contact_markers(base) if args.show_contact_points else []
