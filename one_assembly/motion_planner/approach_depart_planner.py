@@ -162,6 +162,13 @@ class ADPlanner:
         tcp_tf = robot.gl_tcp_tf
         return tcp_tf[:3, 3].copy(), tcp_tf[:3, :3].copy()
 
+    def _state_matches_pose(self, qs, pose_tf, pos_tol=1e-4, rot_tol=1e-3):
+        tcp_pos, tcp_rotmat = self._tcp_pose_from_qs(qs)
+        pose_tf = oum.np.asarray(pose_tf, dtype=oum.np.float32)
+        pos_err = float(oum.np.linalg.norm(tcp_pos - pose_tf[:3, 3]))
+        rot_err = float(oum.np.linalg.norm(tcp_rotmat - pose_tf[:3, :3]))
+        return pos_err <= float(pos_tol) and rot_err <= float(rot_tol)
+
     def _motion_plan(self, q_list):
         q_list = [oum.np.asarray(qs, dtype=oum.np.float32) for qs in q_list]
         return utils.MotionData(q_list)
@@ -417,7 +424,8 @@ class ADPlanner:
             full_plan = self._merge_plans(start2via, linear_app)
 
         goal_state = self._compose_state(goal_robot_qs, resolved_final_ee_qs)
-        if not oum.np.allclose(full_plan.qs_list[-1], goal_state):
+        if (not oum.np.allclose(full_plan.qs_list[-1], goal_state) and
+                not self._state_matches_pose(full_plan.qs_list[-1], goal_tf)):
             end_connect = self._connect_motion(
                 start_qs=full_plan.qs_list[-1],
                 goal_qs=goal_state,

@@ -343,6 +343,8 @@ def plan_place_action(robot: KHIBunri,
         obj_model=target_work.model,
         grasp_collection=grasp_collection,
         goal_pose_list=[goal_pose],
+        pick_approach_direction=np.array([0, 0, -1], dtype=np.float32),
+        approach_direction=np.array([0, 0, -1], dtype=np.float32),
         start_qs=compose_left_state(state),
         linear_granularity=0.02,
         reason_grasps=True,
@@ -758,6 +760,8 @@ def main():
         work.name: bool(getattr(work.model, 'is_free', False))
         for work in worklist.work
     }
+    for i in range(len(playback.state_list)):
+        print(f'state {i}: {playback.state_list[i].lft_qs}')
 
     def apply_event(idx):
         event = playback.event_map.get(idx)

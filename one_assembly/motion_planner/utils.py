@@ -7,7 +7,7 @@ import one.robots.base.mech_base as orbmb
 import one.scene.scene_object as osso
 from one_assembly.precise_collision import PreciseSIMDCollider
 
-DEFAULT_COLLISION_MARGIN = 0.0
+DEFAULT_COLLISION_MARGIN = 0.001
 
 
 class AssemblyFilteredMJCollider:

@@ -453,7 +453,7 @@ class HierarchicalPlannerBase(ADPlanner):
         rot_delta = src_tf[:3, :3].T @ dst_tf[:3, :3]
         cos_theta = oum.np.clip((oum.np.trace(rot_delta) - 1.0) * 0.5, -1.0, 1.0)
         rot_err = float(oum.np.arccos(cos_theta))
-        return 10.0 * pos_err + rot_err
+        return pos_err + rot_err
 
     def _sort_pose_candidates(self, pose_tf_list):
         current_tf = self.robot.gl_tcp_tf

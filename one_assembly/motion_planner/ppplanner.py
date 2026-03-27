@@ -9,6 +9,33 @@ from .hierarchical import HierarchicalPlannerBase
 
 
 class PickPlacePlanner(HierarchicalPlannerBase):
+    def _grasp_motion_params(self, grasp, obj_pose, direction=None, distance=0.0):
+        if direction is not None:
+            return direction, float(distance)
+        pose_tf, pre_pose_tf, _ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose=obj_pose)
+        delta = pose_tf[:3, 3] - pre_pose_tf[:3, 3]
+        delta_norm = float(oum.np.linalg.norm(delta))
+        if delta_norm <= 1e-8:
+            return None, 0.0
+        return delta / delta_norm, delta_norm
+
+    def _grasp_pose_motion(self, grasp, obj_pose, direction=None, distance=0.0, motion_type='sink'):
+        pose_tf, _pre_pose_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose=obj_pose)
+        resolved_direction, resolved_distance = self._grasp_motion_params(
+            grasp,
+            obj_pose=obj_pose,
+            direction=direction,
+            distance=distance,
+        )
+        motion_tf = self._offset_pose_tf(
+            goal_tcp_pos=pose_tf[:3, 3],
+            goal_tcp_rotmat=pose_tf[:3, :3],
+            direction=resolved_direction,
+            distance=resolved_distance,
+            motion_type=motion_type,
+        )
+        return pose_tf, motion_tf, ee_qs
+
     def _needs_prefix_start_depart(self, start_qs):
         start_robot_qs, _start_ee_qs = self._split_state(start_qs)
         home_qs = getattr(self.robot, 'home_qs', None)
@@ -74,6 +101,14 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                                 grasp_collection,
                                 goal_pose_list,
                                 pick_pose=None,
+                                pick_approach_direction=None,
+                                pick_approach_distance=0.1,
+                                pick_depart_direction=None,
+                                pick_depart_distance=0.1,
+                                approach_direction=None,
+                                approach_distance=0.07,
+                                depart_direction=None,
+                                depart_distance=0.07,
                                 linear_granularity=0.03,
                                 exclude_entities=None,
                                 toggle_dbg=False):
@@ -214,13 +249,22 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 tested_count = len(available_ids)
                 approach_entries = []
                 for gid in available_ids:
-                    tcp_tf, _ee_qs = self._grasp_pre_pose(grasp_collection[gid], obj_pose=pick_pose)
+                    _pick_tf, tcp_tf, _ee_qs = self._grasp_pose_motion(
+                        grasp_collection[gid],
+                        obj_pose=pick_pose,
+                        direction=pick_approach_direction,
+                        distance=pick_approach_distance,
+                        motion_type='sink',
+                    )
                     approach_entries.append((gid, tcp_tf, open_ee_qs))
 
                 pick_approach_start_time = time.perf_counter()
                 approach_records = self._screen_pose_list(
                     approach_entries,
                     pln_ctx=pick_transit_pln_ctx,
+                    depart_pln_ctx=pick_transit_pln_ctx,
+                    depart_direction=pick_depart_direction,
+                    depart_distance=pick_depart_distance,
                     linear_granularity=linear_granularity,
                     ref_qs=self.robot.qs.copy(),
                     timing_prefix='pickplace.reason.pick_approach_start.detail',
@@ -274,13 +318,21 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 pick_goal_start_time = time.perf_counter()
                 for gid in available_ids:
                     tcp_tf, ee_qs = self._grasp_pose(grasp_collection[gid], obj_pose=pick_pose)
+                    pick_goal_depart_direction, pick_goal_depart_distance = self._grasp_motion_params(
+                        grasp_collection[gid],
+                        obj_pose=pick_pose,
+                        direction=pick_depart_direction,
+                        distance=pick_depart_distance,
+                    )
                     result, stats = self._screen_pose_with_stats(
                         tcp_pos=tcp_tf[:3, 3],
                         tcp_rotmat=tcp_tf[:3, :3],
-                    ee_qs=ee_qs,
-                    coarse_pln_ctx=pick_goal_arm_pln_ctx,
-                    pln_ctx=pick_goal_ee_pln_ctx,
-                    depart_pln_ctx=pick_transit_pln_ctx,
+                        ee_qs=ee_qs,
+                        coarse_pln_ctx=pick_goal_arm_pln_ctx,
+                        pln_ctx=pick_goal_ee_pln_ctx,
+                        depart_pln_ctx=pick_transit_pln_ctx,
+                        depart_direction=pick_goal_depart_direction,
+                        depart_distance=pick_goal_depart_distance,
                         linear_granularity=linear_granularity,
                         ref_qs=ref_qs_map[gid],
                         timing_prefix='pickplace.reason.pick_goal.detail',
@@ -326,7 +378,13 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 place_approach_start_time = time.perf_counter()
                 place_goal_elapsed = 0.0
                 for gid in available_ids:
-                    pre_tf, pre_ee_qs = self._grasp_pre_pose(grasp_collection[gid], obj_pose=goal_pose)
+                    _goal_tf, pre_tf, pre_ee_qs = self._grasp_pose_motion(
+                        grasp_collection[gid],
+                        obj_pose=goal_pose,
+                        direction=approach_direction,
+                        distance=approach_distance,
+                        motion_type='sink',
+                    )
                     hold_transit_pln_ctx = transit_hold_pln_ctx_for_gid(gid)
                     debug_entries.append(
                         {
@@ -356,6 +414,12 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                             approach_pair_counts[pair] += count
                         continue
                     goal_tf, ee_qs = self._grasp_pose(grasp_collection[gid], obj_pose=goal_pose)
+                    goal_depart_direction, goal_depart_distance = self._grasp_motion_params(
+                        grasp_collection[gid],
+                        obj_pose=goal_pose,
+                        direction=depart_direction,
+                        distance=depart_distance,
+                    )
                     goal_stage_start_time = time.perf_counter()
                     goal_result, goal_stats = self._screen_pose_with_stats(
                         tcp_pos=goal_tf[:3, 3],
@@ -364,6 +428,8 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                         coarse_pln_ctx=hold_goal_arm_pln_ctx_for_gid(gid),
                         pln_ctx=hold_goal_ee_pln_ctx_for_gid(gid),
                         depart_pln_ctx=transit_hold_pln_ctx_for_gid(gid),
+                        depart_direction=goal_depart_direction,
+                        depart_distance=goal_depart_distance,
                         linear_granularity=linear_granularity,
                         ref_qs=pre_result.goal_qs[:self.robot.ndof],
                         timing_prefix=f'pickplace.reason.{goal_label}.detail',
@@ -446,6 +512,14 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                             goal_pose_list,
                             gid=None,
                             start_qs=None,
+                            pick_approach_direction=None,
+                            pick_approach_distance=0.1,
+                            pick_depart_direction=None,
+                            pick_depart_distance=0.1,
+                            approach_direction=None,
+                            approach_distance=0.07,
+                            depart_direction=None,
+                            depart_distance=0.07,
                             linear_granularity=0.03,
                             use_rrt=True,
                             pln_jnt=False,
@@ -493,13 +567,28 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             )
 
             obj_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
-            pick_tf, pick_pre_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose=obj_pose_tf)
+            pick_tf, pick_pre_tf, ee_qs = self._grasp_pose_motion(
+                grasp,
+                obj_pose=obj_pose_tf,
+                direction=pick_approach_direction,
+                distance=pick_approach_distance,
+                motion_type='sink',
+            )
+            pick_depart_direction_resolved, pick_depart_distance_resolved = self._grasp_motion_params(
+                grasp,
+                obj_pose=obj_pose_tf,
+                direction=pick_depart_direction,
+                distance=pick_depart_distance,
+            )
             pick_goal_start_time = time.perf_counter()
             pick_goal, pick_stats = self._screen_pose_with_stats(
                 tcp_pos=pick_tf[:3, 3],
                 tcp_rotmat=pick_tf[:3, :3],
                 ee_qs=ee_qs,
                 pln_ctx=pick_pln_ctx,
+                depart_pln_ctx=hold_pln_ctx,
+                depart_direction=pick_depart_direction_resolved,
+                depart_distance=pick_depart_distance_resolved,
                 linear_granularity=linear_granularity,
                 ref_qs=start_robot_qs,
             )
@@ -542,15 +631,14 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 return None
 
             pick_depart_start_time = time.perf_counter()
-            pick_depart_plan = self._linear_motion_between_poses(
-                start_pos=pick_tf[:3, 3],
-                start_rotmat=pick_tf[:3, :3],
-                goal_pos=pick_pre_tf[:3, 3],
-                goal_rotmat=pick_pre_tf[:3, :3],
-                seed_qs=pick_plan.qs_list[-1],
-                ee_values=ee_qs,
+            pick_depart_plan = self.gen_depart(
+                goal_qs=pick_plan.qs_list[-1],
+                depart_direction=pick_depart_direction_resolved,
+                depart_distance=pick_depart_distance_resolved,
+                linear=pick_depart_distance_resolved > 0.0,
+                linear_granularity=linear_granularity,
                 pln_ctx=hold_pln_ctx,
-                pos_step=linear_granularity,
+                use_rrt=False,
             )
             self._record_timing('pickplace.motion.pick_depart_plan', time.perf_counter() - pick_depart_start_time)
             if pick_depart_plan is None:
@@ -571,9 +659,18 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             moveto_plan = utils.MotionData([full_pick_plan.qs_list[-1]])
             current_state = full_pick_plan.qs_list[-1]
             for goal_idx, goal_pose in enumerate(goal_pose_list):
-                goal_tf, goal_pre_tf, _goal_ee_qs, _goal_jaw_width, _goal_score = self._grasp_world_data(
+                goal_tf, goal_pre_tf, _goal_ee_qs = self._grasp_pose_motion(
                     grasp,
                     obj_pose=goal_pose,
+                    direction=approach_direction,
+                    distance=approach_distance,
+                    motion_type='sink',
+                )
+                goal_depart_direction_resolved, goal_depart_distance_resolved = self._grasp_motion_params(
+                    grasp,
+                    obj_pose=goal_pose,
+                    direction=depart_direction,
+                    distance=depart_distance,
                 )
                 goal_screen_start_time = time.perf_counter()
                 goal_result = self._screen_pose(
@@ -581,6 +678,8 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                     tcp_rotmat=goal_tf[:3, :3],
                     ee_qs=ee_qs,
                     pln_ctx=hold_pln_ctx,
+                    depart_direction=goal_depart_direction_resolved,
+                    depart_distance=goal_depart_distance_resolved,
                     ref_qs=current_state[:self.robot.ndof],
                     timing_prefix=f'pickplace.motion.place_{goal_idx}_goal_screen.detail',
                 )
@@ -642,6 +741,14 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                            grasp_collection,
                            goal_pose_list,
                            start_qs=None,
+                           pick_approach_direction=None,
+                           pick_approach_distance=0.1,
+                           pick_depart_direction=None,
+                           pick_depart_distance=0.1,
+                           approach_direction=None,
+                           approach_distance=0.07,
+                           depart_direction=None,
+                           depart_distance=0.07,
                            linear_granularity=0.03,
                            reason_grasps=True,
                            use_rrt=True,
@@ -662,6 +769,14 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                     grasp_collection=grasp_collection,
                     goal_pose_list=goal_pose_list,
                     pick_pose=obj_pose_tf,
+                    pick_approach_direction=pick_approach_direction,
+                    pick_approach_distance=pick_approach_distance,
+                    pick_depart_direction=pick_depart_direction,
+                    pick_depart_distance=pick_depart_distance,
+                    approach_direction=approach_direction,
+                    approach_distance=approach_distance,
+                    depart_direction=depart_direction,
+                    depart_distance=depart_distance,
                     linear_granularity=linear_granularity,
                     toggle_dbg=toggle_dbg,
                 )
@@ -698,6 +813,14 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                     goal_pose_list=goal_pose_list,
                     gid=gid,
                     start_qs=start_qs,
+                    pick_approach_direction=pick_approach_direction,
+                    pick_approach_distance=pick_approach_distance,
+                    pick_depart_direction=pick_depart_direction,
+                    pick_depart_distance=pick_depart_distance,
+                    approach_direction=approach_direction,
+                    approach_distance=approach_distance,
+                    depart_direction=depart_direction,
+                    depart_distance=depart_distance,
                     linear_granularity=linear_granularity,
                     use_rrt=use_rrt,
                     pln_jnt=pln_jnt,
