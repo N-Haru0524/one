@@ -541,6 +541,45 @@ class ADPlannerSmokeTest(unittest.TestCase):
         )
         self.assertEqual(common_sids, [1])
 
+    def test_screw_reason_common_sids_passes_exclude_entities(self):
+        planner = self.screw_mod.ScrewPlanner(self.robot, pln_ctx=self.pln_ctx)
+        sentinel = object()
+        captured = {}
+        original_screen_pose_with_stats = planner._screen_pose_with_stats
+
+        def fake_screen_pose_with_stats(*args, **kwargs):
+            captured.update(kwargs)
+            return original_screen_pose_with_stats(*args, **kwargs)
+
+        planner._screen_pose_with_stats = fake_screen_pose_with_stats
+        common_sids = planner.reason_common_sids(
+            goal_pose_list=[(oum.vec(0.3, 0.0, 0.0).astype(oum.np.float32), oum.np.eye(3, dtype=oum.np.float32))],
+            exclude_entities=[sentinel],
+        )
+        self.assertEqual(common_sids, [0])
+        self.assertIn('exclude_entities', captured)
+        self.assertIn('survived_sids', planner._last_reason_common_screw_report)
+
+    def test_screw_reason_common_sids_records_failure_location(self):
+        collider = self.utils_mod.build_collider([self.robot])
+        collider.collision_predicate = lambda qs: bool(oum.np.asarray(qs, dtype=oum.np.float32)[0] < 0.2)
+        planner = self.screw_mod.ScrewPlanner(
+            self.robot,
+            pln_ctx=self.utils_mod.build_planning_context(collider),
+        )
+        self.robot.ik_tcp = lambda tgt_rotmat, tgt_pos: [oum.np.asarray(tgt_pos, dtype=oum.np.float32)]
+        goal_pose_list = [
+            (oum.vec(0.1, 0.0, 0.0).astype(oum.np.float32), oum.np.eye(3, dtype=oum.np.float32)),
+            (oum.vec(0.3, 0.0, 0.0).astype(oum.np.float32), oum.np.eye(3, dtype=oum.np.float32)),
+        ]
+        common_sids = planner.reason_common_sids(
+            goal_pose_list=goal_pose_list,
+        )
+        self.assertEqual(common_sids, [1])
+        failure = planner._last_reason_common_screw_report['failures'][0]
+        self.assertEqual(failure['label'], 'screw_goal')
+        self.assertEqual(failure['reason'], 'goal_in_collision')
+
     def test_screw_goal_pose_generation_spans_requested_resolution(self):
         planner = self.screw_mod.ScrewPlanner(
             self.robot,

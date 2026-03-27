@@ -297,7 +297,7 @@ class ADPlanner:
             )
         elif motion_type == 'source':
             start_pos = goal_tcp_pos
-            goal_pos = goal_tcp_pos + offset
+            goal_pos = goal_tcp_pos - offset
             seed_qs = self.robot.ik_tcp_nearest(
                 tgt_rotmat=goal_tcp_rotmat,
                 tgt_pos=start_pos,
@@ -542,7 +542,7 @@ class ADPlanner:
             ref_qs=ref_qs,
             pln_ctx=pln_ctx,
             granularity=granularity,
-            motion_type='sink',
+            motion_type='source',
         )
 
     def gen_approach(self,
@@ -706,7 +706,7 @@ class ADPlanner:
                     goal_tcp_rotmat=goal_tcp_rotmat,
                     direction=depart_direction,
                     distance=depart_distance,
-                    motion_type='sink',
+                    motion_type='source',
                 )
                 ref_qs = goal_qs[:self.robot.ndof]
                 depart_state = self._solve_pose_state(

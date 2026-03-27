@@ -457,18 +457,18 @@ def plan_screw_action(robot: KHIBunri,
     if goal_pose is None:
         return None
     screw_counter = int(worklist.screw_counter)
-    home_pose = worklist.get_screw_pose()
+    pick_pose = worklist.get_screw_pose()
     worklist.screw_counter = screw_counter
     apply_dual_state(robot, state)
     planner = build_right_planner(robot, worklist, target_work)
-    home_pose = resolve_screw_home_pose(
+    pick_pose_list = resolve_screw_pick_pose_candidates(
         planner,
         state,
-        home_pose,
+        pick_pose,
         roll_resolution=screw_resolution,
         toggle_dbg=True,
     )
-    if home_pose is None:
+    if not pick_pose_list:
         print(f'no valid screw pickup pose for {target_work.name}')
         return None
     screw_axis = goal_pose[1][:, 2].astype(np.float32)
@@ -476,7 +476,7 @@ def plan_screw_action(robot: KHIBunri,
         start_qs=compose_right_state(state),
         goal_pose_list=[goal_pose],
         resolution=screw_resolution,
-        home_pose=home_pose,
+        pick_pose_list=pick_pose_list,
         approach_direction=screw_axis,
         approach_distance=0.05,
         depart_direction=screw_axis,
@@ -497,29 +497,28 @@ def plan_screw_action(robot: KHIBunri,
     return PlannedSegment(state_list=state_list, event_map=event_map, held_after=None)
 
 
-def resolve_screw_home_pose(planner: ScrewPlanner,
-                            state: DualRobotState,
-                            home_pose,
-                            roll_resolution=12,
-                            toggle_dbg=False):
+def resolve_screw_pick_pose_candidates(planner: ScrewPlanner,
+                                       state: DualRobotState,
+                                       pick_pose,
+                                       roll_resolution=12,
+                                       toggle_dbg=False):
     ref_qs = state.rgt_qs.astype(np.float32)
-    roll_candidates = planner.gen_pose_roll_candidates(home_pose, resolution=roll_resolution)
+    roll_candidates = planner.gen_pose_roll_candidates(pick_pose, resolution=roll_resolution)
+    valid_roll_poses = []
     for roll_idx, roll_pose in enumerate(roll_candidates):
-        candidate_state = planner._home_state(home_pose=roll_pose, ref_qs=ref_qs)
+        candidate_state = planner._pick_state(pick_pose=roll_pose, ref_qs=ref_qs)
         if candidate_state is None:
             if toggle_dbg:
-                print(f'[screw_home] roll_idx={roll_idx}, home_state=None')
+                print(f'[screw_pick] roll_idx={roll_idx}, pick_state=None')
             continue
-        is_valid = planner.pln_ctx.is_state_valid(candidate_state)
         if toggle_dbg:
             print(
-                '[screw_home] '
-                f'roll_idx={roll_idx}, state_valid={int(is_valid)}, '
+                '[screw_pick] '
+                f'roll_idx={roll_idx}, pick_state=1, '
                 f'candidate_pos={roll_pose[0].tolist()}'
             )
-        if is_valid:
-            return roll_pose
-    return None
+        valid_roll_poses.append(roll_pose)
+    return valid_roll_poses
 
 
 def apply_symbolic_action(worklist: WorkList, action):

@@ -20,8 +20,9 @@ def split_state(robot, screwdriver, qs):
 
 
 def apply_screwdriver_state(screwdriver, active_qs):
-    del screwdriver
-    del active_qs
+    if active_qs.size == 0:
+        return
+    screwdriver.fk(qs=active_qs)
 
 
 def main():
@@ -97,13 +98,13 @@ def main():
     robot_start.rgba = (0.0, 0.55, 0.15, 0.35)
     robot_start.attach_to(scene)
 
-    home_pose = (
+    pick_pose = (
         oum.vec(0.35, -0.20, 0.24).astype(oum.np.float32),
         start_rotmat.copy(),
     )
     ossop.frame(
-        pos=home_pose[0],
-        rotmat=home_pose[1],
+        pos=pick_pose[0],
+        rotmat=pick_pose[1],
         length_scale=0.08,
         radius_scale=0.75,
         color_mat=ouc.CoordColor.MYC,
@@ -143,9 +144,9 @@ def main():
     plan = planner.gen_screw(
         start_qs=start_qs,
         goal_pose_list=goal_pose_list,
-        home_pose=home_pose,
-        home_approach_direction=oum.vec(0.0, 0.0, -1.0).astype(oum.np.float32),
-        home_approach_distance=0.05,
+        pick_pose=pick_pose,
+        pick_approach_direction=oum.vec(0.0, 0.0, -1.0).astype(oum.np.float32),
+        pick_approach_distance=0.05,
         approach_direction=screw_axis,
         approach_distance=0.06,
         depart_direction=oum.vec(0.0, 0.0, 1.0).astype(oum.np.float32),

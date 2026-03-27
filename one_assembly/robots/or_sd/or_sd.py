@@ -1,3 +1,4 @@
+import gc
 import os
 
 import one.robots.base.mech_structure as orbms
@@ -61,6 +62,20 @@ class ORSD(oreb.EndEffectorBase, oreb.PointMixin):
         self._loc_tcp_tf[:] = oum.tf_from_rotmat_pos(self.tcp_rotmat, tcp_pos)
         return result
 
+    def _sync_parent_tcp(self):
+        for ref in gc.get_referrers(self):
+            if not isinstance(ref, dict) or self not in ref:
+                continue
+            for owner in gc.get_referrers(ref):
+                if getattr(owner, '_mountings', None) is not ref:
+                    continue
+                if not hasattr(owner, '_loc_tcp_tf'):
+                    continue
+                mounting = ref.get(self)
+                if mounting is None or not hasattr(mounting, 'engage_tf'):
+                    continue
+                owner._loc_tcp_tf[:] = mounting.engage_tf @ self.loc_tcp_tf
+
     def clone(self):
         new = super().clone()
         new.tcp_pos = self.tcp_pos.copy()
@@ -72,3 +87,4 @@ class ORSD(oreb.EndEffectorBase, oreb.PointMixin):
         if length < self.shank_range[0] or length > self.shank_range[1]:
             raise ValueError(f'shank length {length} out of range {self.shank_range}')
         self.fk(qs=[length])
+        self._sync_parent_tcp()
