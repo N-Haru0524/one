@@ -1,7 +1,6 @@
 import argparse
 import builtins
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +12,7 @@ if str(ROOT) not in sys.path:
 from one import ossop, ovw, ouc
 import one.utils.math as oum
 from one.grasp.antipodal import antipodal
+from one_assembly.assembly_data import DualRobotState, EventMap, HeldGrasp, PlaybackPlan, PlannedSegment
 from one_assembly.assembly_planning import (
     AssemblyNode,
     assembly_sequence_planning,
@@ -25,42 +25,6 @@ from one_assembly.motion_planner import FoldPlanner, PickPlacePlanner, ScrewPlan
 from one_assembly.motion_planner import utils as omp_utils
 from one_assembly.robots.khi_bunri.khi_bunri import KHIBunri
 from one_assembly.worklist import WorkList
-
-
-@dataclass
-class DualRobotState:
-    lft_qs: np.ndarray
-    lft_ee_qs: np.ndarray
-    rgt_qs: np.ndarray
-    rgt_ee_qs: np.ndarray
-
-    def copy(self):
-        return DualRobotState(
-            lft_qs=self.lft_qs.copy(),
-            lft_ee_qs=self.lft_ee_qs.copy(),
-            rgt_qs=self.rgt_qs.copy(),
-            rgt_ee_qs=self.rgt_ee_qs.copy(),
-        )
-
-
-@dataclass
-class PlaybackPlan:
-    labels: list[str]
-    state_list: list[DualRobotState]
-    event_map: dict[int, tuple]
-
-
-@dataclass
-class HeldGrasp:
-    work_name: str
-    gid: int
-
-
-@dataclass
-class PlannedSegment:
-    state_list: list[DualRobotState]
-    event_map: dict[int, tuple]
-    held_after: HeldGrasp | None = None
 
 
 def parse_args():
@@ -251,7 +215,7 @@ def build_right_planner(robot: KHIBunri, worklist: WorkList, target_work):
     )
 
 
-def append_release_state(state_list: list[DualRobotState], event_map, work_name):
+def append_release_state(state_list: list[DualRobotState], event_map: EventMap, work_name: str):
     final_state = state_list[-1].copy()
     open_half = float(robot_ref().lft_gripper.jaw_range[1] * 0.5)
     final_state.lft_ee_qs[:] = np.array([open_half, open_half], dtype=np.float32)
@@ -343,7 +307,7 @@ def plan_place_action(robot: KHIBunri,
         obj_model=target_work.model,
         grasp_collection=grasp_collection,
         goal_pose_list=[goal_pose],
-        pick_approach_direction=np.array([0, 0, -1], dtype=np.float32),
+        pick_depart_direction=np.array([0, 0, -1], dtype=np.float32),
         approach_direction=np.array([0, 0, -1], dtype=np.float32),
         start_qs=compose_left_state(state),
         linear_granularity=0.02,
@@ -351,14 +315,14 @@ def plan_place_action(robot: KHIBunri,
         use_rrt=True,
         pln_jnt=False,
         release_at_end=not keep_holding,
-        toggle_dbg=True,
+        toggle_dbg=False,
     )
     print_timing_report(planner, f'pick/place {target_work.name}')
     if plan is None:
         print(f'pick/place failed for {target_work.name}')
         return None
     state_list = embed_left_path(state, plan.qs_list)
-    event_map = {}
+    event_map: EventMap = {}
     selected_gid = int(plan.events['gid']) if 'gid' in plan.events else None
     if selected_gid is not None and 0 <= selected_gid < len(grasp_collection):
         pick_pose_tf = oum.tf_from_rotmat_pos(target_work.model.rotmat, target_work.model.pos)
@@ -442,9 +406,9 @@ def plan_fold_action(robot: KHIBunri,
         print(f'pick/fold failed for {target_work.name}')
         return None
     state_list = embed_left_path(state, plan.qs_list)
-    event_map = {}
+    event_map: EventMap = {}
     if 'attach' in plan.events:
-        event_map[int(plan.events['attach'])] = ('attach', target_work.name)
+        event_map[int(plan.events['attach'])] = ('attach', target_work.name, None, None, None)
     append_release_state(state_list, event_map, target_work.name)
     return PlannedSegment(state_list=state_list, event_map=event_map, held_after=None)
 
@@ -492,7 +456,7 @@ def plan_screw_action(robot: KHIBunri,
         print(f'screw failed for {target_work.name}')
         return None
     state_list = embed_right_path(state, plan.qs_list)
-    event_map = {}
+    event_map: EventMap = {}
     retract_state = state_list[-1].copy()
     retract_state.rgt_ee_qs[:] = np.array([robot.rgt_screwdriver.shank_range[0]], dtype=np.float32)
     state_list.append(retract_state)
@@ -538,7 +502,10 @@ def reset_prefix_work_state(worklist: WorkList, leaf, layout_name: str, action_i
     reset_work_state(worklist, layout_name=layout_name, actions=prefix_actions)
 
 
-def flatten_segment(global_states, global_events, state_list, event_map):
+def flatten_segment(global_states: list[DualRobotState],
+                    global_events: EventMap,
+                    state_list: list[DualRobotState],
+                    event_map: EventMap):
     start_idx = len(global_states)
     skipped_prefix = 0
     for idx, state in enumerate(state_list):
@@ -563,7 +530,7 @@ def build_playback_plan(robot: KHIBunri,
                         screw_resolution=12):
     grasp_cache = {}
     global_states = []
-    global_events = {}
+    global_events: EventMap = {}
     max_plan_attempts = 1
     _ROBOT_REF['value'] = robot
 
@@ -760,8 +727,6 @@ def main():
         work.name: bool(getattr(work.model, 'is_free', False))
         for work in worklist.work
     }
-    for i in range(len(playback.state_list)):
-        print(f'state {i}: {playback.state_list[i].lft_qs}')
 
     def apply_event(idx):
         event = playback.event_map.get(idx)
