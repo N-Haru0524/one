@@ -8,6 +8,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from one import ossop, ouc, ovw
+import one.utils.math as oum
+from one_assembly.robots.or_sd.or_sd import ORSD
 from one_assembly.worklist import WorkList
 
 
@@ -32,12 +34,25 @@ def print_action_summary(worklist: WorkList):
         print(f'{work_idx}: {work.name} -> {action_names}')
 
 
+def attach_orsd_ghost(scene, tcp_pose, alpha=0.2):
+    ghost = ORSD()
+    ghost.set_shank_len(float(ghost.shank_range[1]))
+    ghost_tf = oum.tf_from_rotmat_pos(tcp_pose[1], tcp_pose[0]) @ oum.np.linalg.inv(ghost.loc_tcp_tf)
+    ghost.set_rotmat_pos(rotmat=ghost_tf[:3, :3], pos=ghost_tf[:3, 3])
+    ghost.alpha = alpha
+    ghost.attach_to(scene)
+    return ghost
+
+
 def visualize_action_results(base, worklist: WorkList, action_view='state'):
     worklist.screw_counter = 0
     for work in worklist.work:
         start_pose = work.current_pose
         for step_idx, step in enumerate(work.steps):
-            pose = work.pose_after_action(step_idx, start_pose=start_pose)
+            pose_start = start_pose
+            if step.action_type in {'fold', 'screw'} and step_idx > 0:
+                pose_start = work.pose_after_actions(range(step_idx), start_pose=work.current_pose)
+            pose = work.pose_after_action(step_idx, start_pose=pose_start)
             if pose is None:
                 continue
 
@@ -55,6 +70,7 @@ def visualize_action_results(base, worklist: WorkList, action_view='state'):
                 marker.attach_to(base.scene)
             elif step.action_type == 'screw':
                 pick_pose = worklist.get_screw_pose()
+                attach_orsd_ghost(base.scene, pick_pose, alpha=0.12)
                 pick_marker = ossop.frame(
                     pos=pick_pose[0],
                     rotmat=pick_pose[1],
@@ -63,6 +79,8 @@ def visualize_action_results(base, worklist: WorkList, action_view='state'):
                     color_mat=ouc.CoordColor.DYO,
                     alpha=0.9)
                 pick_marker.attach_to(base.scene)
+
+                attach_orsd_ghost(base.scene, pose, alpha=0.18)
 
                 marker = ossop.frame(
                     pos=pose[0],

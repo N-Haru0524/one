@@ -14,6 +14,7 @@ from one import ouc, ossop, ovw
 import one.scene.scene as oss
 import one.physics.mj_env as opme
 from one_assembly.assembly_planning import execute_sequence_string, reset_work_state
+from one_assembly.motion_planner import utils as omp_utils
 from one_assembly.worklist import WorkList
 
 
@@ -56,7 +57,12 @@ def parse_args():
         action='store_true',
         help='Override all WorkList scene objects to OBJECT collision group before simulating.',
     )
-    parser.add_argument('--margin', type=float, default=0.0)
+    parser.add_argument(
+        '--margin',
+        type=float,
+        default=omp_utils.DEFAULT_COLLISION_MARGIN,
+        help='MuJoCo collision margin. Defaults to one_assembly.motion_planner.utils.DEFAULT_COLLISION_MARGIN.',
+    )
     parser.add_argument('--duration', type=float, default=0.5, help='Simulation duration in seconds.')
     parser.add_argument('--dt', type=float, default=0.5, help='Viewer update interval in seconds.')
     parser.add_argument('--show-collision', action='store_true')
@@ -79,7 +85,8 @@ def resolve_collision_type(label):
 
 
 def build_worklist(collision_type, use_visual_offset=True):
-    root_path = os.path.join('/home/wrs/nagai/one/one_assembly/worklists/move_object')
+    # root_path = os.path.join('/home/wrs/nagai/one/one_assembly/worklists/move_object')
+    root_path = os.path.join('/home/wrs/nagai/one/one_assembly/worklists/electric_assembly')
     yaml_path = os.path.join(root_path, 'yamls')
     mesh_path = os.path.join(root_path, 'meshes')
     grasp_path = os.path.join(root_path, 'grasps')
@@ -206,6 +213,7 @@ def main():
     for _name, item in named_items:
         scene.add(item)
     mjenv = opme.MJEnv(scene, margin=args.margin)
+    margin_label = f'margin: {args.margin:.4f} (utils default: {omp_utils.DEFAULT_COLLISION_MARGIN:.4f})'
 
     if args.show_collision:
         base = ovw.World(
@@ -222,6 +230,7 @@ def main():
         last_contacts = {'pairs': None}
 
         print(f'sequence: {args.sequence or "root"}')
+        print(margin_label)
 
         def update(_dt):
             if elapsed['t'] >= args.duration:
@@ -251,6 +260,7 @@ def main():
         mjenv.sync.pull_all_sobj_pose()
         contacts, _points = contact_report(mjenv, named_items)
         print(f'sequence: {args.sequence or "root"}')
+        print(margin_label)
         print(f'ncon: {int(mjenv.data.ncon)}')
         if not contacts:
             print('contacts: none')

@@ -17,7 +17,7 @@ gripper = or_2fg7.OR2FG7()
 #
 # gripper.toggle_render_collision = True
 gripper.attach_to(base.scene)
-tcpframe = ossop.frame(pos=gripper.fk()[-1][:3, 3], rotmat=gripper.fk()[-1][:3, :3])
+tcpframe = ossop.frame(pos=gripper.gl_tcp_tf[:3, 3], rotmat=gripper.gl_tcp_tf[:3, :3], length_scale=0.5)
 tcpframe.attach_to(base.scene)
 # base.run()
 
