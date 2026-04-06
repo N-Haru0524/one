@@ -12,7 +12,17 @@ if str(ROOT) not in sys.path:
 from one import ossop, ovw, ouc
 import one.utils.math as oum
 from one.grasp.antipodal import antipodal
-from one_assembly.assembly_data import DualRobotState, EventMap, HeldGrasp, PlaybackPlan, PlannedSegment
+from one_assembly.assembly_data import (
+    ArmSegment,
+    DualRobotState,
+    EEEvent,
+    HeldGrasp,
+    PlannerActionDraft,
+    PlannerSegmentDraft,
+    SyncPoint,
+    SyncSegment,
+    SynchronizedPlan,
+)
 from one_assembly.assembly_planning import (
     AssemblyNode,
     assembly_sequence_planning,
@@ -89,36 +99,6 @@ def compose_left_state(state: DualRobotState) -> np.ndarray:
 
 def compose_right_state(state: DualRobotState) -> np.ndarray:
     return np.concatenate([state.rgt_qs, state.rgt_ee_qs]).astype(np.float32)
-
-
-def embed_left_path(state: DualRobotState, path) -> list[DualRobotState]:
-    embedded = []
-    for qs in path:
-        qs = np.asarray(qs, dtype=np.float32)
-        lft_qs = qs[:6]
-        lft_ee_qs = qs[6:6 + robot_ref().lft_gripper.ndof]
-        embedded.append(DualRobotState(
-            lft_qs=lft_qs.copy(),
-            lft_ee_qs=lft_ee_qs.copy(),
-            rgt_qs=state.rgt_qs.copy(),
-            rgt_ee_qs=state.rgt_ee_qs.copy(),
-        ))
-    return embedded
-
-
-def embed_right_path(state: DualRobotState, path) -> list[DualRobotState]:
-    embedded = []
-    for qs in path:
-        qs = np.asarray(qs, dtype=np.float32)
-        rgt_qs = qs[:6]
-        rgt_ee_qs = qs[6:6 + robot_ref().rgt_screwdriver.ndof]
-        embedded.append(DualRobotState(
-            lft_qs=state.lft_qs.copy(),
-            lft_ee_qs=state.lft_ee_qs.copy(),
-            rgt_qs=rgt_qs.copy(),
-            rgt_ee_qs=rgt_ee_qs.copy(),
-        ))
-    return embedded
 
 
 _ROBOT_REF = {'value': None}
@@ -215,22 +195,6 @@ def build_right_planner(robot: KHIBunri, worklist: WorkList, target_work):
     )
 
 
-def append_release_state(state_list: list[DualRobotState], event_map: EventMap, work_name: str):
-    final_state = state_list[-1].copy()
-    open_half = float(robot_ref().lft_gripper.jaw_range[1] * 0.5)
-    final_state.lft_ee_qs[:] = np.array([open_half, open_half], dtype=np.float32)
-    state_list.append(final_state)
-    event_map[len(state_list) - 1] = ('release', work_name)
-
-def grasp_event_payload(gripper, obj_pose, grasp):
-    pose_tf = oum.ensure_tf(obj_pose) @ np.asarray(grasp[0], dtype=np.float32)
-    pick_tf = oum.ensure_tf(obj_pose)
-    jaw_width = float(np.asarray(grasp[2], dtype=np.float32).reshape(-1)[0])
-    ee_base_tf = pose_tf @ np.linalg.inv(gripper.loc_tcp_tf)
-    engage_tf = np.linalg.inv(ee_base_tf) @ pick_tf
-    return jaw_width, engage_tf.astype(np.float32)
-
-
 def print_attach_debug(robot: KHIBunri, work, gid, jaw_width, engage_tf):
     tcp_tf = robot.lft_tcp_tf.copy()
     obj_tf = oum.tf_from_rotmat_pos(work.model.rotmat, work.model.pos)
@@ -279,6 +243,104 @@ def print_timing_report(planner, label, min_total_s=1e-4):
         )
 
 
+def sanitize_sync_token(raw: str) -> str:
+    return raw.replace(':', '_').replace('/', '_').replace('-', '_')
+
+
+def open_gripper_qs() -> np.ndarray:
+    open_half = float(robot_ref().lft_gripper.jaw_range[1] * 0.5)
+    return np.array([open_half, open_half], dtype=np.float32)
+
+
+def segment_arm_path(segment: SyncSegment, actor: str) -> list[np.ndarray]:
+    for arm_segment in segment.arm_segments:
+        if arm_segment.actor == actor:
+            return arm_segment.qs_list
+    return []
+
+
+def apply_ee_event_to_state(state: DualRobotState, event: EEEvent):
+    updated = state.copy()
+    if event.actor == 'left_gripper':
+        if event.action in ('open', 'release'):
+            updated.lft_ee_qs[:] = open_gripper_qs()
+        elif event.action in ('close', 'attach') and event.value is not None:
+            width = float(event.value) * 0.5
+            updated.lft_ee_qs[:] = np.array([width, width], dtype=np.float32)
+    elif event.actor == 'right_driver':
+        if event.action in ('extend', 'retract') and event.value is not None:
+            updated.rgt_ee_qs[:] = np.array([float(event.value)], dtype=np.float32)
+    return updated
+
+
+def expand_segment_states(start_state: DualRobotState, segment: SyncSegment) -> list[DualRobotState]:
+    left_path = segment_arm_path(segment, 'left_arm')
+    right_path = segment_arm_path(segment, 'right_arm')
+    sample_count = max(len(left_path), len(right_path), 1)
+    states = []
+    for idx in range(sample_count):
+        state = start_state.copy() if idx == 0 else states[-1].copy()
+        if left_path:
+            state.lft_qs = np.asarray(left_path[min(idx, len(left_path) - 1)], dtype=np.float32).copy()
+        if right_path:
+            state.rgt_qs = np.asarray(right_path[min(idx, len(right_path) - 1)], dtype=np.float32).copy()
+        states.append(state)
+    for event in segment.ee_events:
+        if event.timing == 'sample' and event.sample_index is not None:
+            start_idx = max(0, min(int(event.sample_index), sample_count - 1))
+        elif event.timing == 'end':
+            start_idx = sample_count - 1
+        else:
+            start_idx = 0
+        for idx in range(start_idx, sample_count):
+            states[idx] = apply_ee_event_to_state(states[idx], event)
+    return states
+
+
+def end_state_after_segment(start_state: DualRobotState, segment: SyncSegment) -> DualRobotState:
+    return expand_segment_states(start_state, segment)[-1].copy()
+
+
+def boundary_state_for_segment(playback: SynchronizedPlan, segment_idx: int) -> DualRobotState:
+    if playback.initial_state is None:
+        raise ValueError('playback.initial_state is required for replay')
+    state = playback.initial_state.copy()
+    for prev_segment in playback.sync_segments[:segment_idx]:
+        state = end_state_after_segment(state, prev_segment)
+    return state
+
+
+def build_sync_segment_from_draft(segment_id: str,
+                                  start_sync_id: str,
+                                  end_sync_id: str,
+                                  draft: PlannerSegmentDraft) -> SyncSegment:
+    left_path = draft.left_path or []
+    right_path = draft.right_path or []
+    ee_events = list(draft.ee_events or [])
+    return SyncSegment(
+        id=segment_id,
+        label=draft.segment_label,
+        start_sync_id=start_sync_id,
+        end_sync_id=end_sync_id,
+        arm_segments=[
+            ArmSegment(actor='left_arm', qs_list=left_path, idle=len(left_path) == 0),
+            ArmSegment(actor='right_arm', qs_list=right_path, idle=len(right_path) == 0),
+        ],
+        ee_events=ee_events,
+    )
+
+
+def normalize_action_draft(draft) -> PlannerActionDraft:
+    if isinstance(draft, PlannerActionDraft):
+        return draft
+    if isinstance(draft, PlannerSegmentDraft):
+        return PlannerActionDraft(
+            segments=[draft],
+            held_after=draft.held_after,
+        )
+    raise TypeError(f'Unsupported planner draft type: {type(draft)!r}')
+
+
 def plan_place_action(robot: KHIBunri,
                       worklist: WorkList,
                       state: DualRobotState,
@@ -286,8 +348,7 @@ def plan_place_action(robot: KHIBunri,
                       grasp_cache,
                       reasoning_backend='simd',
                       transit_backend='mujoco',
-                      keep_holding=False,
-                      release_work_name=None):
+                      keep_holding=False):
     target_work = worklist[action.work_idx]
     goal_pose = target_work.pose_after_action(action.action_idx)
     if goal_pose is None:
@@ -303,10 +364,13 @@ def plan_place_action(robot: KHIBunri,
     if not grasp_collection:
         print(f'no grasps for {target_work.name}')
         return None
-    plan = planner.gen_pick_and_place(
+    draft = planner.gen_place_draft(
         obj_model=target_work.model,
+        work_name=target_work.name,
         grasp_collection=grasp_collection,
         goal_pose_list=[goal_pose],
+        segment_label=f'place {target_work.name}',
+        end_sync_label=action.label,
         pick_depart_direction=np.array([0, 0, -1], dtype=np.float32),
         approach_direction=np.array([0, 0, -1], dtype=np.float32),
         start_qs=compose_left_state(state),
@@ -314,40 +378,14 @@ def plan_place_action(robot: KHIBunri,
         reason_grasps=True,
         use_rrt=True,
         pln_jnt=False,
-        release_at_end=not keep_holding,
+        keep_holding=keep_holding,
         toggle_dbg=False,
     )
-    print_timing_report(planner, f'pick/place {target_work.name}')
-    if plan is None:
+    # print_timing_report(planner, f'pick/place {target_work.name}')
+    if draft is None:
         print(f'pick/place failed for {target_work.name}')
         return None
-    state_list = embed_left_path(state, plan.qs_list)
-    event_map: EventMap = {}
-    selected_gid = int(plan.events['gid']) if 'gid' in plan.events else None
-    if selected_gid is not None and 0 <= selected_gid < len(grasp_collection):
-        pick_pose_tf = oum.tf_from_rotmat_pos(target_work.model.rotmat, target_work.model.pos)
-        jaw_width, engage_tf = grasp_event_payload(
-            robot.lft_gripper,
-            pick_pose_tf,
-            grasp_collection[selected_gid],
-        )
-    else:
-        jaw_width = None
-        engage_tf = None
-    if 'attach' in plan.events:
-        event_map[int(plan.events['attach'])] = (
-            'attach',
-            target_work.name,
-            selected_gid,
-            jaw_width,
-            engage_tf,
-        )
-    if 'release' in plan.events:
-        event_map[int(plan.events['release'])] = ('release', target_work.name)
-    held_after = None
-    if keep_holding and selected_gid is not None:
-        held_after = HeldGrasp(work_name=target_work.name, gid=selected_gid)
-    return PlannedSegment(state_list=state_list, event_map=event_map, held_after=held_after)
+    return draft
 
 
 def plan_fold_action(robot: KHIBunri,
@@ -375,42 +413,26 @@ def plan_fold_action(robot: KHIBunri,
     if not grasp_collection:
         print(f'no grasps for {target_work.name}')
         return None
-    if held_grasp is not None and held_grasp.work_name == target_work.name:
-        if held_grasp.gid < 0 or held_grasp.gid >= len(grasp_collection):
-            return None
-        plan = planner.gen_hold_and_fold(
-            obj_model=target_work.model,
-            grasp=grasp_collection[held_grasp.gid],
-            goal_pose_list=goal_pose_list,
-            start_qs=compose_left_state(state),
-            linear_granularity=0.02,
-            pln_jnt=False,
-            exclude_entities=[target_work.model],
-            gid=held_grasp.gid,
-            toggle_dbg=True,
-        )
-    else:
-        plan = planner.gen_pick_and_fold(
-            obj_model=target_work.model,
-            grasp_collection=grasp_collection,
-            goal_pose_list=goal_pose_list,
-            start_qs=compose_left_state(state),
-            linear_granularity=0.02,
-            reason_grasps=True,
-            use_rrt=True,
-            pln_jnt=False,
-            exclude_entities=[target_work.model],
-            toggle_dbg=True,
-        )
-    if plan is None:
+    draft = planner.gen_fold_draft(
+        obj_model=target_work.model,
+        work_name=target_work.name,
+        grasp_collection=grasp_collection,
+        goal_pose_list=goal_pose_list,
+        held_grasp=held_grasp,
+        segment_label=f'fold {target_work.name}',
+        end_sync_label=action.label,
+        start_qs=compose_left_state(state),
+        linear_granularity=0.02,
+        reason_grasps=True,
+        use_rrt=True,
+        pln_jnt=False,
+        exclude_entities=[target_work.model],
+        toggle_dbg=False,
+    )
+    if draft is None:
         print(f'pick/fold failed for {target_work.name}')
         return None
-    state_list = embed_left_path(state, plan.qs_list)
-    event_map: EventMap = {}
-    if 'attach' in plan.events:
-        event_map[int(plan.events['attach'])] = ('attach', target_work.name, None, None, None)
-    append_release_state(state_list, event_map, target_work.name)
-    return PlannedSegment(state_list=state_list, event_map=event_map, held_after=None)
+    return draft
 
 
 def plan_screw_action(robot: KHIBunri,
@@ -432,13 +454,14 @@ def plan_screw_action(robot: KHIBunri,
         state,
         pick_pose,
         roll_resolution=screw_resolution,
-        toggle_dbg=True,
+        toggle_dbg=False,
     )
     if not pick_pose_list:
         print(f'no valid screw pickup pose for {target_work.name}')
         return None
     screw_axis = goal_pose[1][:, 2].astype(np.float32)
-    plan = planner.gen_screw(
+    draft = planner.gen_screw_draft(
+        work_name=target_work.name,
         start_qs=compose_right_state(state),
         goal_pose_list=[goal_pose],
         resolution=screw_resolution,
@@ -450,17 +473,14 @@ def plan_screw_action(robot: KHIBunri,
         linear_granularity=0.02,
         use_rrt=True,
         pln_jnt=False,
-        toggle_dbg=True,
+        segment_label=f'screw {target_work.name}',
+        end_sync_label=action.label,
+        toggle_dbg=False,
     )
-    if plan is None:
+    if draft is None:
         print(f'screw failed for {target_work.name}')
         return None
-    state_list = embed_right_path(state, plan.qs_list)
-    event_map: EventMap = {}
-    retract_state = state_list[-1].copy()
-    retract_state.rgt_ee_qs[:] = np.array([robot.rgt_screwdriver.shank_range[0]], dtype=np.float32)
-    state_list.append(retract_state)
-    return PlannedSegment(state_list=state_list, event_map=event_map, held_after=None)
+    return draft
 
 
 def resolve_screw_pick_pose_candidates(planner: ScrewPlanner,
@@ -502,35 +522,14 @@ def reset_prefix_work_state(worklist: WorkList, leaf, layout_name: str, action_i
     reset_work_state(worklist, layout_name=layout_name, actions=prefix_actions)
 
 
-def flatten_segment(global_states: list[DualRobotState],
-                    global_events: EventMap,
-                    state_list: list[DualRobotState],
-                    event_map: EventMap):
-    start_idx = len(global_states)
-    skipped_prefix = 0
-    for idx, state in enumerate(state_list):
-        if start_idx > 0 and idx == 0 and np.allclose(
-                global_states[-1].lft_qs, state.lft_qs) and np.allclose(
-                global_states[-1].lft_ee_qs, state.lft_ee_qs) and np.allclose(
-                global_states[-1].rgt_qs, state.rgt_qs) and np.allclose(
-                global_states[-1].rgt_ee_qs, state.rgt_ee_qs):
-            skipped_prefix = 1
-            continue
-        global_states.append(state.copy())
-    for idx, event in event_map.items():
-        global_events[start_idx + idx - skipped_prefix] = event
-
-
-def build_playback_plan(robot: KHIBunri,
-                        worklist: WorkList,
-                        leaf,
-                        layout_name,
-                        reasoning_backend='simd',
-                        transit_backend='mujoco',
-                        screw_resolution=12):
+def build_synchronized_plan(robot: KHIBunri,
+                            worklist: WorkList,
+                            leaf,
+                            layout_name,
+                            reasoning_backend='simd',
+                            transit_backend='mujoco',
+                            screw_resolution=12):
     grasp_cache = {}
-    global_states = []
-    global_events: EventMap = {}
     max_plan_attempts = 1
     _ROBOT_REF['value'] = robot
 
@@ -539,9 +538,9 @@ def build_playback_plan(robot: KHIBunri,
     robot.lft_gripper.open()
     robot.rgt_screwdriver.set_shank_len(robot.rgt_screwdriver.shank_range[0])
     current_state = capture_dual_state(robot)
-    global_states.append(current_state.copy())
+    sync_points = [SyncPoint(id='sp_home', label='both home')]
+    sync_segments = []
     held_grasp = None
-    pending_release_work = None
 
     for idx, action in enumerate(leaf.sequence):
         reset_prefix_work_state(worklist, leaf, layout_name, idx)
@@ -553,10 +552,12 @@ def build_playback_plan(robot: KHIBunri,
             next_action.work_idx == action.work_idx and
             next_action.action_type == 'fold'
         )
-        planned = None
+        start_sync_id = sync_points[-1].id
+        end_sync_id = f'sp_{idx + 1}_{sanitize_sync_token(action.label)}'
+        draft = None
         for _attempt in range(max_plan_attempts):
             if action.action_type == 'place':
-                planned = plan_place_action(
+                draft = plan_place_action(
                     robot,
                     worklist,
                     current_state,
@@ -565,10 +566,9 @@ def build_playback_plan(robot: KHIBunri,
                     reasoning_backend=reasoning_backend,
                     transit_backend=transit_backend,
                     keep_holding=keep_holding,
-                    release_work_name=pending_release_work,
                 )
             elif action.action_type == 'fold':
-                planned = plan_fold_action(
+                draft = plan_fold_action(
                     robot,
                     worklist,
                     current_state,
@@ -579,7 +579,7 @@ def build_playback_plan(robot: KHIBunri,
                     held_grasp=held_grasp,
                 )
             elif action.action_type == 'screw':
-                planned = plan_screw_action(
+                draft = plan_screw_action(
                     robot,
                     worklist,
                     current_state,
@@ -588,30 +588,44 @@ def build_playback_plan(robot: KHIBunri,
                 )
             else:
                 return None
-            if planned is not None:
+            if draft is not None:
                 break
-        if planned is None:
+        if draft is None:
             print(f'plan failed for {action.label}')
             return None
-
-        if pending_release_work is not None and len(global_states) > 0:
-            global_events[len(global_states) - 1] = ('release', pending_release_work)
-            pending_release_work = None
-        flatten_segment(global_states, global_events, planned.state_list, planned.event_map)
-        current_state = global_states[-1].copy()
-        held_grasp = planned.held_after
-        if action.action_type == 'place' and not keep_holding:
-            pending_release_work = worklist[action.work_idx].name
+        action_draft = normalize_action_draft(draft)
+        if not action_draft.segments:
+            print(f'empty draft for {action.label}')
+            return None
+        segment_start_sync_id = start_sync_id
+        for seg_idx, seg_draft in enumerate(action_draft.segments):
+            seg_end_label = seg_draft.end_sync_label or action.label
+            seg_end_sync_id = (
+                end_sync_id if seg_idx == len(action_draft.segments) - 1
+                else f'{end_sync_id}_k{seg_idx}'
+            )
+            segment = build_sync_segment_from_draft(
+                segment_id=f'seg_{idx}_{seg_idx}_{sanitize_sync_token(seg_end_label)}',
+                start_sync_id=segment_start_sync_id,
+                end_sync_id=seg_end_sync_id,
+                draft=seg_draft,
+            )
+            sync_segments.append(segment)
+            current_state = end_state_after_segment(current_state, segment)
+            sync_points.append(SyncPoint(id=seg_end_sync_id, label=seg_end_label))
+            segment_start_sync_id = seg_end_sync_id
+        held_grasp = action_draft.held_after
         apply_symbolic_action(worklist, action)
 
     reset_work_state(worklist, layout_name=layout_name)
     robot.goto_home_conf()
     robot.lft_gripper.open()
     robot.rgt_screwdriver.set_shank_len(robot.rgt_screwdriver.shank_range[0])
-    return PlaybackPlan(
+    return SynchronizedPlan(
         labels=sequence_labels(leaf),
-        state_list=global_states,
-        event_map=global_events,
+        initial_state=capture_dual_state(robot),
+        sync_points=sync_points,
+        sync_segments=sync_segments,
     )
 
 
@@ -703,7 +717,7 @@ def main():
     playback = None
     for leaf in candidates:
         print(f'trying leaf: {sequence_labels(leaf)}')
-        playback = build_playback_plan(
+        playback = build_synchronized_plan(
             robot,
             worklist,
             leaf,
@@ -720,66 +734,98 @@ def main():
 
     print(f'selected leaf: {playback.labels}')
     held = {'name': None}
-    counter = {'idx': 0}
-    root_state = capture_dual_state(robot)
+    counter = {'segment_idx': 0, 'sample_idx': 0}
     root_work_state = reset_work_state(worklist, layout_name=args.layout)
     root_free_states = {
         work.name: bool(getattr(work.model, 'is_free', False))
         for work in worklist.work
     }
+    current_segment_cache = {'segment_id': None, 'states': []}
 
-    def apply_event(idx):
-        event = playback.event_map.get(idx)
-        if event is None:
-            return
-        kind = event[0]
-        work_name = event[1]
-        work = worklist.get_work(work_name)
-        if work is None:
-            return
-        if kind == 'attach':
-            if held['name'] != work_name:
-                if hasattr(work.model, 'is_free'):
-                    work.model.is_free = True
-                _gid, jaw_width, engage_tf = event[2], event[3], event[4]
-                if jaw_width is None or engage_tf is None:
-                    jaw_width = float(np.sum(robot.lft_gripper.qs[:robot.lft_gripper.ndof]))
-                    robot.lft_gripper.grasp(work.model, jaw_width=jaw_width)
-                else:
-                    print_attach_debug(robot, work, _gid, jaw_width, engage_tf)
-                    robot.lft_gripper.set_jaw_width(float(jaw_width))
-                    robot.lft_gripper.mount(work.model, robot.lft_gripper.runtime_root_lnk, engage_tf)
-                    robot.lft_gripper._update_mounting(robot.lft_gripper._mountings[work.model])
-                held['name'] = work_name
-        elif kind == 'release':
-            if work.model in robot.lft_gripper._mountings:
-                robot.lft_gripper.release(work.model)
-            held['name'] = None
-
-    def reset_scene():
+    def clear_left_mountings():
         for child in list(robot.lft_gripper._mountings.keys()):
             robot.lft_gripper.release(child)
+
+    def apply_ee_event(event: EEEvent):
+        work = worklist.get_work(event.work_name) if event.work_name is not None else None
+        if event.actor == 'left_gripper':
+            if event.action == 'open':
+                robot.lft_gripper.fk(open_gripper_qs())
+            elif event.action == 'attach' and work is not None:
+                if held['name'] != event.work_name:
+                    if hasattr(work.model, 'is_free'):
+                        work.model.is_free = True
+                    jaw_width = event.value
+                    engage_tf = event.engage_tf
+                    if jaw_width is None or engage_tf is None:
+                        jaw_width = float(np.sum(robot.lft_gripper.qs[:robot.lft_gripper.ndof]))
+                        robot.lft_gripper.grasp(work.model, jaw_width=jaw_width)
+                    else:
+                        # print_attach_debug(robot, work, event.grasp_id, jaw_width, engage_tf)
+                        robot.lft_gripper.set_jaw_width(float(jaw_width))
+                        robot.lft_gripper.mount(work.model, robot.lft_gripper.runtime_root_lnk, engage_tf)
+                        robot.lft_gripper._update_mounting(robot.lft_gripper._mountings[work.model])
+                    held['name'] = event.work_name
+            elif event.action == 'release' and work is not None:
+                if work.model in robot.lft_gripper._mountings:
+                    robot.lft_gripper.release(work.model)
+                robot.lft_gripper.fk(open_gripper_qs())
+                held['name'] = None
+        elif event.actor == 'right_driver' and event.action in ('extend', 'retract') and event.value is not None:
+            robot.rgt_screwdriver.fk(np.array([float(event.value)], dtype=np.float32))
+
+    def trigger_segment_events(segment: SyncSegment, sample_idx: int):
+        is_last_sample = sample_idx == len(current_segment_cache['states']) - 1
+        for event in segment.ee_events:
+            if event.timing == 'start' and sample_idx == 0:
+                apply_ee_event(event)
+            elif event.timing == 'sample' and event.sample_index == sample_idx:
+                apply_ee_event(event)
+            elif event.timing == 'end' and is_last_sample:
+                apply_ee_event(event)
+
+    def segment_states(segment: SyncSegment, start_state: DualRobotState) -> list[DualRobotState]:
+        if current_segment_cache['segment_id'] != segment.id:
+            current_segment_cache['segment_id'] = segment.id
+            current_segment_cache['states'] = expand_segment_states(start_state, segment)
+        return current_segment_cache['states']
+
+    def reset_scene():
+        clear_left_mountings()
         held['name'] = None
         reset_work_state(worklist, state=root_work_state)
         for work in worklist.work:
             root_is_free = root_free_states.get(work.name)
             if root_is_free is not None and hasattr(work.model, 'is_free'):
                 work.model.is_free = root_is_free
-        apply_dual_state(robot, root_state)
-        counter['idx'] = 0
+        if playback.initial_state is None:
+            raise RuntimeError('playback.initial_state is not available')
+        apply_dual_state(robot, playback.initial_state)
+        current_segment_cache['segment_id'] = None
+        current_segment_cache['states'] = []
+        counter['segment_idx'] = 0
+        counter['sample_idx'] = 0
 
     def update_tcp_frames():
         lft_tcp_frame.set_rotmat_pos(rotmat=robot.lft_tcp_tf[:3, :3], pos=robot.lft_tcp_tf[:3, 3])
         rgt_tcp_frame.set_rotmat_pos(rotmat=robot.rgt_tcp_tf[:3, :3], pos=robot.rgt_tcp_tf[:3, 3])
 
     def update(_dt):
-        if counter['idx'] >= len(playback.state_list):
+        if counter['segment_idx'] >= len(playback.sync_segments):
             reset_scene()
             return
-        apply_dual_state(robot, playback.state_list[counter['idx']])
-        apply_event(counter['idx'])
+        segment = playback.sync_segments[counter['segment_idx']]
+        boundary_state = boundary_state_for_segment(playback, counter['segment_idx'])
+        states = segment_states(segment, boundary_state)
+        apply_dual_state(robot, states[counter['sample_idx']])
+        trigger_segment_events(segment, counter['sample_idx'])
         update_tcp_frames()
-        counter['idx'] += 1
+        counter['sample_idx'] += 1
+        if counter['sample_idx'] >= len(states):
+            counter['segment_idx'] += 1
+            counter['sample_idx'] = 0
+            current_segment_cache['segment_id'] = None
+            current_segment_cache['states'] = []
 
     reset_scene()
     update(0.0)
