@@ -132,6 +132,28 @@ class EEEvent:
     label: str | None = None  # e.g. 'close on contact'
 
 
+@dataclass(frozen=True)
+class HeldGrasp:
+    work_name: str
+    gid: int
+
+
+@dataclass
+class PlannerSegmentDraft:
+    segment_label: str
+    left_path: list[np.ndarray] | None = None
+    right_path: list[np.ndarray] | None = None
+    ee_events: list[EEEvent] | None = None
+    end_sync_label: str | None = None
+    held_after: HeldGrasp | None = None
+
+
+@dataclass
+class PlannerActionDraft:
+    segments: list[PlannerSegmentDraft] = field(default_factory=list)
+    held_after: HeldGrasp | None = None
+
+
 @dataclass
 class SyncSegment:
     id: str  # e.g. 'seg_grasped_to_pre_screw'

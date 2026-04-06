@@ -369,6 +369,7 @@ class ADPlanner:
         via_rot_err = float(oum.np.linalg.norm(goal_tf[:3, :3] - via_tf[:3, :3]))
         if via_pos_err <= 1e-6 and via_rot_err <= 1e-6:
             full_plan = self._motion_plan([via_goal_qs])
+            via_idx = 0
             if start_qs is not None:
                 start2via = self._connect_motion(
                     start_qs=start_qs,
@@ -381,6 +382,7 @@ class ADPlanner:
                 if start2via is None:
                     return None
                 full_plan = start2via
+                via_idx = len(start2via.qs_list) - 1
             goal_state = self._compose_state(goal_robot_qs, resolved_final_ee_qs)
             if not oum.np.allclose(full_plan.qs_list[-1], goal_state):
                 end_connect = self._connect_motion(
@@ -394,6 +396,7 @@ class ADPlanner:
                 if end_connect is None:
                     return None
                 full_plan = self._merge_plans(full_plan, end_connect)
+            full_plan.events['via'] = via_idx
             return full_plan
 
         linear_app = self._linear_motion_between_poses(
@@ -422,6 +425,9 @@ class ADPlanner:
             if start2via is None:
                 return None
             full_plan = self._merge_plans(start2via, linear_app)
+            via_idx = len(start2via.qs_list) - 1
+        else:
+            via_idx = 0
 
         goal_state = self._compose_state(goal_robot_qs, resolved_final_ee_qs)
         if (not oum.np.allclose(full_plan.qs_list[-1], goal_state) and
@@ -437,6 +443,7 @@ class ADPlanner:
             if end_connect is None:
                 return None
             full_plan = self._merge_plans(full_plan, end_connect)
+        full_plan.events['via'] = via_idx
         return full_plan
 
     def _connect_motion(self, start_qs, goal_qs,
@@ -618,7 +625,11 @@ class ADPlanner:
             )
         if not linear or approach_distance <= 0.0:
             if start_qs is None:
-                return self._motion_plan([goal_qs]) if goal_qs is not None else None
+                plan = self._motion_plan([goal_qs]) if goal_qs is not None else None
+                if plan is not None:
+                    plan.events['approach_start'] = 0
+                    plan.events['goal'] = len(plan.qs_list) - 1
+                return plan
             if goal_qs is None:
                 goal_qs = self.robot.ik_tcp_nearest(
                     tgt_rotmat=oum.np.asarray(goal_tcp_rotmat, dtype=oum.np.float32),
@@ -628,12 +639,16 @@ class ADPlanner:
                 if goal_qs is None:
                     self._set_last_plan_failure('approach_goal_ik', 'goal_ik_failed')
                     return None
-            return self._connect_motion(
+            plan = self._connect_motion(
                 start_qs=start_qs,
                 goal_qs=goal_qs,
                 pln_ctx=pln_ctx,
                 use_rrt=use_rrt,
             )
+            if plan is not None:
+                plan.events['approach_start'] = 0
+                plan.events['goal'] = len(plan.qs_list) - 1
+            return plan
         linear_app = self.gen_linear_approach(
             goal_tcp_pos=goal_tcp_pos,
             goal_tcp_rotmat=goal_tcp_rotmat,
@@ -656,6 +671,9 @@ class ADPlanner:
             if start2app is None:
                 return None
             full_plan = self._merge_plans(start2app, linear_app)
+            approach_start_idx = len(start2app.qs_list) - 1
+        else:
+            approach_start_idx = 0
         if goal_qs is not None and not oum.np.allclose(full_plan.qs_list[-1], goal_qs):
             end_connect = self._connect_motion(
                 start_qs=full_plan.qs_list[-1],
@@ -666,6 +684,8 @@ class ADPlanner:
             if end_connect is None:
                 return None
             full_plan = self._merge_plans(full_plan, end_connect)
+        full_plan.events['approach_start'] = approach_start_idx
+        full_plan.events['goal'] = len(full_plan.qs_list) - 1
         return full_plan
 
     def gen_depart(self,
@@ -758,8 +778,14 @@ class ADPlanner:
             plan = self._motion_plan([goal_qs])
         if not linear or depart_distance <= 0.0:
             if plan is None:
-                return None if end_qs is not None else self._motion_plan([goal_qs]) if goal_qs is not None else None
+                plan = None if end_qs is not None else self._motion_plan([goal_qs]) if goal_qs is not None else None
+                if plan is not None:
+                    plan.events['goal'] = 0
+                    plan.events['depart_end'] = len(plan.qs_list) - 1
+                return plan
             if end_qs is None:
+                plan.events['goal'] = len(plan.qs_list) - 1
+                plan.events['depart_end'] = len(plan.qs_list) - 1
                 return plan
             end_plan = self._connect_motion(
                 start_qs=plan.qs_list[-1],
@@ -769,7 +795,10 @@ class ADPlanner:
             )
             if end_plan is None:
                 return None
-            return self._merge_plans(plan, end_plan)
+            merged = self._merge_plans(plan, end_plan)
+            merged.events['goal'] = len(plan.qs_list) - 1
+            merged.events['depart_end'] = len(merged.qs_list) - 1
+            return merged
         linear_dep = self.gen_linear_depart(
             start_tcp_pos=goal_tcp_pos,
             start_tcp_rotmat=goal_tcp_rotmat,
@@ -782,8 +811,13 @@ class ADPlanner:
         if linear_dep is None:
             return None
         if plan is not None:
+            goal_idx = len(plan.qs_list) - 1
             linear_dep = self._merge_plans(plan, linear_dep)
+        else:
+            goal_idx = 0
         if end_qs is None:
+            linear_dep.events['goal'] = goal_idx
+            linear_dep.events['depart_end'] = len(linear_dep.qs_list) - 1
             return linear_dep
         dep2end = self._connect_motion(
             start_qs=linear_dep.qs_list[-1],
@@ -793,7 +827,10 @@ class ADPlanner:
         )
         if dep2end is None:
             return None
-        return self._merge_plans(linear_dep, dep2end)
+        merged = self._merge_plans(linear_dep, dep2end)
+        merged.events['goal'] = goal_idx
+        merged.events['depart_end'] = len(linear_dep.qs_list) - 1
+        return merged
 
     def gen_approach_depart(self,
                             goal_tcp_pos=None,
@@ -844,6 +881,12 @@ class ADPlanner:
         if dep is None:
             return None
         if len(app.qs_list) <= 1:
+            dep.events['approach_start'] = 0
             return dep
         app_prefix = utils.MotionData(app.qs_list[:-1])
-        return self._merge_plans(app_prefix, dep)
+        merged = self._merge_plans(app_prefix, dep)
+        merged.events['approach_start'] = int(app.events.get('approach_start', 0))
+        offset = len(app_prefix.qs_list)
+        merged.events['goal'] = offset + int(dep.events.get('goal', 0))
+        merged.events['depart_end'] = offset + int(dep.events.get('depart_end', len(dep.qs_list) - 1))
+        return merged
