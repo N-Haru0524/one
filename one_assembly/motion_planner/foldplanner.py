@@ -1,3 +1,6 @@
+from collections import Counter
+
+from one_assembly.assembly_data import EEEvent, PlannerActionDraft, PlannerSegmentDraft
 import one.utils.math as oum
 import one.motion.trajectory.cartesian as omtc
 import builtins
@@ -47,6 +50,14 @@ def interpolate_fold(start_pose, goal_pose, n_steps=20):
 
 
 class FoldPlanner(HierarchicalPlannerBase):
+    def _grasp_event_payload(self, obj_pose, grasp):
+        pose_tf = oum.ensure_tf(obj_pose) @ oum.np.asarray(grasp[0], dtype=oum.np.float32)
+        pick_tf = oum.ensure_tf(obj_pose)
+        jaw_width = float(oum.np.asarray(grasp[2], dtype=oum.np.float32).reshape(-1)[0])
+        ee_base_tf = pose_tf @ oum.np.linalg.inv(self.ee_actor.loc_tcp_tf)
+        engage_tf = oum.np.linalg.inv(ee_base_tf) @ pick_tf
+        return jaw_width, engage_tf.astype(oum.np.float32)
+
     def _debug_attach_ee_clone(self, tcp_tf, ee_qs=None, rgba=(1.0, 0.0, 0.0, 0.35)):
         if self.ee_actor is None:
             return
@@ -127,6 +138,26 @@ class FoldPlanner(HierarchicalPlannerBase):
             'failures': {},
         }
 
+        def print_stage_stats(label, total, survived, reason_counts, pair_counts=None):
+            if not toggle_dbg:
+                return
+            parts = [f'[{label}]', f'tested={int(total)}']
+            removed = int(total) - int(survived)
+            parts.append(f'removed={removed}')
+            for reason, count in sorted(reason_counts.items()):
+                if count <= 0:
+                    continue
+                parts.append(f'{reason}={int(count)}')
+            parts.append(f'survived={int(survived)}')
+            if pair_counts:
+                top_pairs = sorted(pair_counts.items(), key=lambda item: (-item[1], item[0]))[:3]
+                parts.append(
+                    'contacts=' + '; '.join(
+                        f'{pair[0]}<->{pair[1]}:{count}' for pair, count in top_pairs
+                    )
+                )
+            print(', '.join(parts))
+
         def hold_pln_ctx_for_gid(gid, backend):
             return hold_ctx_cache.setdefault(
                 (gid, backend),
@@ -140,11 +171,25 @@ class FoldPlanner(HierarchicalPlannerBase):
             )
 
         def classify_reason(stats):
-            if stats['rejected_no_ik']:
-                return 'no_ik'
-            if stats['rejected_goal_collision']:
-                return 'goal_in_collision'
-            return 'unknown'
+            return self._classify_screen_stats(stats)
+
+        collision_free_ids = []
+        grasp_reason_counts = {
+            'grasp_collision': 0,
+        }
+        for gid in available_ids:
+            if self._grasp_has_collision(grasp_collection[gid]):
+                self._last_reason_common_grasp_report['failures'][gid] = {
+                    'label': 'grasp',
+                    'reason': 'grasp_collision',
+                }
+                grasp_reason_counts['grasp_collision'] += 1
+                continue
+            collision_free_ids.append(gid)
+        available_ids = collision_free_ids
+        print_stage_stats('fold_reason grasp', len(grasp_collection), len(available_ids), grasp_reason_counts)
+        if not available_ids:
+            return []
 
         endpoint_checks = []
         open_ee_qs = self._max_open_ee_qs()
@@ -170,18 +215,33 @@ class FoldPlanner(HierarchicalPlannerBase):
 
         for label, pose_entries in endpoint_checks:
             next_available_ids = []
+            reason_counts = {}
+            pair_counts = Counter()
+            debug_entries = []
             for gid, tcp_tf, ee_qs in pose_entries:
+                stage_pln_ctx = (
+                    pick_transit_pln_ctx if label == 'pick_approach_start'
+                    else pick_pln_ctx if label == 'pick_goal'
+                    else hold_pln_ctx_for_gid(gid, self.transit_backend)
+                )
+                debug_entries.append(
+                    {
+                        'key': gid,
+                        'pose_tf': tcp_tf,
+                        'ee_qs': ee_qs,
+                        'pln_ctx': stage_pln_ctx,
+                        'ref_qs': self.robot.qs.copy(),
+                    }
+                )
                 result, stats = self._screen_pose_with_stats(
                     tcp_pos=tcp_tf[:3, 3],
                     tcp_rotmat=tcp_tf[:3, :3],
                     ee_qs=ee_qs,
-                    pln_ctx=(
-                        pick_transit_pln_ctx if label == 'pick_approach_start'
-                        else pick_pln_ctx if label == 'pick_goal'
-                        else hold_pln_ctx_for_gid(gid, self.transit_backend)
-                    ),
+                    pln_ctx=stage_pln_ctx,
                     linear_granularity=linear_granularity,
                     ref_qs=self.robot.qs.copy(),
+                    diagnose_collision_pairs=toggle_dbg,
+                    debug_visualize_contacts=toggle_dbg,
                 )
                 if result is None:
                     reason = classify_reason(stats)
@@ -194,17 +254,31 @@ class FoldPlanner(HierarchicalPlannerBase):
                             'tcp_rotmat': tcp_tf[:3, :3].copy(),
                         },
                     )
-                    if toggle_dbg:
-                        self._debug_attach_ee_clone(tcp_tf, ee_qs=ee_qs)
-                        pos = oum.np.array2string(tcp_tf[:3, 3], precision=4)
-                        print(f'[fold_reason gid={gid}] label={label}, reason={reason}, tcp_pos={pos}')
+                    reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                    for pair, count in stats.get('collision_pairs', []):
+                        pair_counts[pair] += count
                     continue
                 next_available_ids.append(gid)
+            print_stage_stats(
+                f'fold_reason {label}',
+                len(pose_entries),
+                len(next_available_ids),
+                reason_counts,
+                pair_counts=pair_counts,
+            )
+            if toggle_dbg and pose_entries and not next_available_ids:
+                self._debug_visualize_failed_pose_entries(
+                    label=f'fold_reason {label}',
+                    debug_entries=debug_entries,
+                    linear_granularity=linear_granularity,
+                )
             available_ids = next_available_ids
             if not available_ids:
                 break
 
         self._last_reason_common_grasp_report['survived_gids'] = available_ids.copy()
+        if toggle_dbg:
+            print(f'[fold_reason final], survived={len(available_ids)}')
         return available_ids
 
     def reason_common_gids(self, *args, **kwargs):
@@ -221,7 +295,6 @@ class FoldPlanner(HierarchicalPlannerBase):
                           ref_qs=None,
                           pln_ctx=None,
                           toggle_dbg=False):
-        del toggle_dbg
         plan_pln_ctx = self._resolve_motion_pln_ctx(pln_ctx=pln_ctx, obstacle_list=obstacle_list)
         if ref_qs is None:
             ref_qs = self.robot.qs.copy()
@@ -236,8 +309,20 @@ class FoldPlanner(HierarchicalPlannerBase):
         )
         if q_seq is None:
             self._set_last_plan_failure('interpolated_ik', 'cartesian_ik_failed')
+            if toggle_dbg:
+                print('[fold_linear] interpolated_ik failed: cartesian_ik_failed')
             return None
-        return self._motion_plan_from_joint_list(q_seq, ee_values=ee_values, pln_ctx=plan_pln_ctx)
+        plan = self._motion_plan_from_joint_list(q_seq, ee_values=ee_values, pln_ctx=plan_pln_ctx)
+        if toggle_dbg:
+            if plan is None:
+                failure = self._last_plan_failure
+                if failure is None:
+                    print('[fold_linear] path validation failed')
+                else:
+                    print(f'[fold_linear] {failure["stage"]} failed: {failure["reason"]}')
+            else:
+                print(f'[fold_linear] planned: waypoints={len(plan.qs_list)}')
+        return plan
 
     def gen_piecewise_motion(self,
                              start_tcp_pos,
@@ -250,7 +335,6 @@ class FoldPlanner(HierarchicalPlannerBase):
                              ref_qs=None,
                              pln_ctx=None,
                              toggle_dbg=False):
-        del toggle_dbg
         if len(goal_tcp_pos_list) != len(goal_tcp_rotmat_list):
             raise ValueError('goal_tcp_pos_list and goal_tcp_rotmat_list must have the same length')
         plan_pln_ctx = self._resolve_motion_pln_ctx(pln_ctx=pln_ctx, obstacle_list=obstacle_list)
@@ -273,17 +357,30 @@ class FoldPlanner(HierarchicalPlannerBase):
             )
             if q_seq is None:
                 self._set_last_plan_failure('interpolated_ik', 'cartesian_ik_failed')
+                if toggle_dbg:
+                    print(f'[fold_piecewise seg={len(mot_data)}] interpolated_ik failed: cartesian_ik_failed')
                 return None
             if len(q_seq) > 0:
                 q_seq = oum.np.asarray(q_seq, dtype=oum.np.float32).copy()
                 q_seq[0] = seed_qs
             segment_plan = self._motion_plan_from_joint_list(q_seq, ee_values=ee_values, pln_ctx=plan_pln_ctx)
             if segment_plan is None:
+                if toggle_dbg:
+                    failure = self._last_plan_failure
+                    if failure is None:
+                        print(f'[fold_piecewise seg={len(mot_data)}] segment planning failed')
+                    else:
+                        print(
+                            f'[fold_piecewise seg={len(mot_data)}] '
+                            f'{failure["stage"]} failed: {failure["reason"]}'
+                        )
                 return None
             mot_data = segment_plan if len(mot_data) == 0 else self._merge_plans(mot_data, segment_plan)
             seed_qs = q_seq[-1]
             cur_pos = oum.np.asarray(goal_pos, dtype=oum.np.float32)
             cur_rotmat = oum.np.asarray(goal_rotmat, dtype=oum.np.float32)
+        if toggle_dbg:
+            print(f'[fold_piecewise] planned: segments={len(goal_tcp_pos_list)}, waypoints={len(mot_data.qs_list)}')
         return mot_data
 
     def _gen_fold_motion(self,
@@ -332,6 +429,7 @@ class FoldPlanner(HierarchicalPlannerBase):
                 ee_values=ee_qs,
                 ref_qs=start_state[:self.robot.ndof],
                 pln_ctx=pln_ctx,
+                toggle_dbg=toggle_dbg,
             )
         if fold_plan is None and toggle_dbg:
             failure = self._last_plan_failure
@@ -341,6 +439,8 @@ class FoldPlanner(HierarchicalPlannerBase):
                 print(f'[fold gid={gid}] {failure["stage"]} failed: {failure["reason"]}')
         if fold_plan is None:
             return None
+        if toggle_dbg:
+            print(f'[fold gid={gid}] planned: waypoints={len(fold_plan.qs_list)}')
         if fold_plan.qs_list and oum.np.allclose(fold_plan.qs_list[0], start_state):
             return fold_plan
         return self._merge_plans(utils.MotionData([start_state]), fold_plan)
@@ -362,6 +462,10 @@ class FoldPlanner(HierarchicalPlannerBase):
         open_ee_qs = self._max_open_ee_qs()
         pick_pln_ctx = self._filtered_pln_ctx(exclude_entities=exclude_entities)
         obj_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
+        if self._grasp_has_collision(grasp):
+            if toggle_dbg:
+                print(f'[pickfold_pick gid={gid}] skipped grasp_collision=1')
+            return None
         pick_tf, pick_pre_tf, ee_qs, _jaw_width, _score = self._grasp_world_data(grasp, obj_pose=obj_pose_tf)
         pick_goal, pick_stats = self._screen_pose_with_stats(
             tcp_pos=pick_tf[:3, 3],
@@ -370,6 +474,8 @@ class FoldPlanner(HierarchicalPlannerBase):
             pln_ctx=pick_pln_ctx,
             linear_granularity=linear_granularity,
             ref_qs=start_robot_qs,
+            diagnose_collision_pairs=toggle_dbg,
+            debug_visualize_contacts=toggle_dbg,
         )
         if toggle_dbg:
             if pick_stats['survived']:
@@ -428,8 +534,12 @@ class FoldPlanner(HierarchicalPlannerBase):
             return None
 
         full_plan = self._merge_plans(pick_plan, fold_plan)
+        full_plan.events['pick_pre'] = int(pick_plan.events.get('via', 0))
         full_plan.events['attach'] = len(pick_plan.qs_list) - 1
+        full_plan.events['fold_start'] = len(pick_plan.qs_list) - 1
         full_plan.events['gid'] = gid
+        if toggle_dbg:
+            print(f'[pickfold gid={gid}] planned: waypoints={len(full_plan.qs_list)}')
         return full_plan
 
     def gen_pick_and_fold(self,
@@ -457,7 +567,10 @@ class FoldPlanner(HierarchicalPlannerBase):
                 toggle_dbg=toggle_dbg,
             )
         else:
-            common_gids = list(range(len(grasp_collection)))
+            common_gids = [
+                gid for gid, grasp in enumerate(grasp_collection)
+                if not self._grasp_has_collision(grasp)
+            ]
         if not common_gids:
             if toggle_dbg:
                 print('[pickfold] no common grasp ids after reasoning')
@@ -468,7 +581,8 @@ class FoldPlanner(HierarchicalPlannerBase):
             tcp_tf, _ee_qs = self._grasp_pose(grasp_collection[gid], obj_pose=obj_pose_tf)
             pick_pose_tf_list.append((gid, tcp_tf))
 
-        for gid, _ in self._sort_pose_candidates(pick_pose_tf_list):
+        sorted_candidates = self._sort_pose_candidates(pick_pose_tf_list)
+        for idx, (gid, _) in enumerate(sorted_candidates):
             grasp = grasp_collection[gid]
             full_plan = self.gen_pick_and_fold_motion(
                 obj_model=obj_model,
@@ -483,6 +597,16 @@ class FoldPlanner(HierarchicalPlannerBase):
                 toggle_dbg=toggle_dbg,
             )
             if full_plan is None:
+                if toggle_dbg and idx + 1 < len(sorted_candidates):
+                    next_gid = sorted_candidates[idx + 1][0]
+                    failure = self._last_plan_failure
+                    if failure is None:
+                        print(f'[pickfold] gid={gid} failed, trying next gid={next_gid}')
+                    else:
+                        print(
+                            f'[pickfold] gid={gid} failed at {failure["stage"]}: '
+                            f'{failure["reason"]}, trying next gid={next_gid}'
+                        )
                 continue
             if toggle_dbg:
                 print(f'[pickfold] selected gid={gid}, waypoints={len(full_plan.qs_list)}')
@@ -534,5 +658,157 @@ class FoldPlanner(HierarchicalPlannerBase):
         )
         if fold_plan is None:
             return None
+        fold_plan.events['fold_start'] = 0
         fold_plan.events['gid'] = gid
+        if toggle_dbg:
+            print(f'[holdfold gid={gid}] planned: waypoints={len(fold_plan.qs_list)}')
         return fold_plan
+
+    def gen_fold_draft(self,
+                       obj_model,
+                       work_name,
+                       grasp_collection,
+                       goal_pose_list,
+                       held_grasp=None,
+                       segment_label=None,
+                       end_sync_label=None,
+                       start_qs=None,
+                       linear_granularity=0.03,
+                       reason_grasps=True,
+                       use_rrt=True,
+                       pln_jnt=False,
+                       exclude_entities=None,
+                       toggle_dbg=False):
+        selected_gid = None
+        plan = None
+        held_mode = held_grasp is not None and held_grasp.work_name == work_name
+        if held_mode:
+            selected_gid = int(held_grasp.gid)
+            if selected_gid < 0 or selected_gid >= len(grasp_collection):
+                return None
+            plan = self.gen_hold_and_fold(
+                obj_model=obj_model,
+                grasp=grasp_collection[selected_gid],
+                goal_pose_list=goal_pose_list,
+                start_qs=start_qs,
+                linear_granularity=linear_granularity,
+                pln_jnt=pln_jnt,
+                exclude_entities=exclude_entities,
+                gid=selected_gid,
+                toggle_dbg=toggle_dbg,
+            )
+        else:
+            plan = self.gen_pick_and_fold(
+                obj_model=obj_model,
+                grasp_collection=grasp_collection,
+                goal_pose_list=goal_pose_list,
+                start_qs=start_qs,
+                linear_granularity=linear_granularity,
+                reason_grasps=reason_grasps,
+                use_rrt=use_rrt,
+                pln_jnt=pln_jnt,
+                exclude_entities=exclude_entities,
+                toggle_dbg=toggle_dbg,
+            )
+            if plan is not None and 'gid' in plan.events:
+                selected_gid = int(plan.events['gid'])
+        if plan is None:
+            return None
+
+        if selected_gid is None and 'gid' in plan.events:
+            selected_gid = int(plan.events['gid'])
+        grasp = None
+        if selected_gid is not None and 0 <= selected_gid < len(grasp_collection):
+            grasp = grasp_collection[selected_gid]
+
+        left_path = [
+            oum.np.asarray(qs[:self.robot.ndof], dtype=oum.np.float32).copy()
+            for qs in plan.qs_list
+        ]
+        jaw_width = None
+        engage_tf = None
+        if grasp is not None:
+            pick_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
+            jaw_width, engage_tf = self._grasp_event_payload(
+                obj_pose=pick_pose_tf,
+                grasp=grasp,
+            )
+
+        segments = []
+        if held_mode:
+            segments.append(PlannerSegmentDraft(
+                segment_label=segment_label or f'fold {work_name}',
+                left_path=[qs.copy() for qs in left_path],
+                right_path=[],
+                ee_events=[
+                    EEEvent(
+                        actor='left_gripper',
+                        action='release',
+                        timing='end',
+                        work_name=work_name,
+                        label=f'release {work_name}',
+                    ),
+                ],
+                end_sync_label=end_sync_label or f'{work_name} fold',
+                held_after=None,
+            ))
+            return PlannerActionDraft(segments=segments, held_after=None)
+
+        pick_pre = int(plan.events.get('pick_pre', 0))
+        attach_idx = int(plan.events['attach'])
+        fold_start = int(plan.events.get('fold_start', attach_idx))
+
+        segments.append(PlannerSegmentDraft(
+            segment_label=f'approach {work_name} pregrasp',
+            left_path=[qs.copy() for qs in left_path[:pick_pre + 1]],
+            right_path=[],
+            ee_events=[],
+            end_sync_label=f'{work_name} pregrasp',
+            held_after=None,
+        ))
+        segments.append(PlannerSegmentDraft(
+            segment_label=f'grasp {work_name}',
+            left_path=[qs.copy() for qs in left_path[pick_pre:attach_idx + 1]],
+            right_path=[],
+            ee_events=[
+                EEEvent(
+                    actor='left_gripper',
+                    action='attach',
+                    timing='end',
+                    value=jaw_width,
+                    work_name=work_name,
+                    grasp_id=selected_gid,
+                    engage_tf=engage_tf,
+                    label=f'attach {work_name}',
+                ),
+            ],
+            end_sync_label=f'{work_name} grasp',
+            held_after=None,
+        ))
+        if fold_start > attach_idx:
+            segments.append(PlannerSegmentDraft(
+                segment_label=f'lift {work_name}',
+                left_path=[qs.copy() for qs in left_path[attach_idx:fold_start + 1]],
+                right_path=[],
+                ee_events=[],
+                end_sync_label=f'{work_name} postgrasp',
+                held_after=None,
+            ))
+        segments.append(PlannerSegmentDraft(
+            segment_label=segment_label or f'fold {work_name}',
+            left_path=[qs.copy() for qs in left_path[fold_start:]],
+            right_path=[],
+            ee_events=[
+                EEEvent(
+                    actor='left_gripper',
+                    action='release',
+                    timing='end',
+                    work_name=work_name,
+                    label=f'release {work_name}',
+                ),
+            ],
+            end_sync_label=end_sync_label or f'{work_name} fold',
+            held_after=None,
+        ))
+        segments = [segment for segment in segments if segment.left_path]
+        return PlannerActionDraft(segments=segments, held_after=None)

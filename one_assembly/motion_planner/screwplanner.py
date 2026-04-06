@@ -1,6 +1,7 @@
 from collections import Counter
 import time
 
+from one_assembly.assembly_data import EEEvent, PlannerActionDraft, PlannerSegmentDraft
 import one.motion.trajectory.cartesian as omtc
 import one.utils.math as oum
 
@@ -456,6 +457,21 @@ class ScrewPlanner(HierarchicalPlannerBase):
                 )
 
             self._last_reason_common_screw_pick_record = None
+            filtered_pose_tf_list = []
+            grasp_reason_counts = {
+                'goal_collision': 0,
+            }
+            for sid, pose_tf, ee_qs in pose_tf_list:
+                if self._grasp_has_collision((pose_tf, pose_tf, 0.0, 0.0, False)):
+                    record_failure(sid, 'screw_grasp', 'goal_collision', pose_tf)
+                    grasp_reason_counts['goal_collision'] += 1
+                    continue
+                filtered_pose_tf_list.append((sid, pose_tf, ee_qs))
+            pose_tf_list = filtered_pose_tf_list
+            print_stage_stats('screw_reason grasp', len(goal_pose_list), len(pose_tf_list), grasp_reason_counts)
+            if not pose_tf_list:
+                self._last_reason_common_screw_report['survived_sids'] = []
+                return {}
             current_ref_qs = ref_qs.copy()
             pick_pose_entries = []
             if pick_pose_list is not None:
@@ -586,8 +602,6 @@ class ScrewPlanner(HierarchicalPlannerBase):
 
             approach_entries = []
             for sid, pose_tf, ee_qs in pose_tf_list:
-                if self._grasp_has_collision((pose_tf, pose_tf, 0.0, 0.0, False)):
-                    continue
                 if approach_distance > 0.0:
                     pre_tf = self._offset_pose_tf(
                         goal_tcp_pos=pose_tf[:3, 3],
@@ -618,7 +632,7 @@ class ScrewPlanner(HierarchicalPlannerBase):
                 linear_granularity=linear_granularity,
                 ref_qs=current_ref_qs,
                 timing_prefix='screw.reason.screw_approach_start.detail',
-                toggle_dbg=True,
+                toggle_dbg=False,
                 debug_label='screw_reason screw_approach_start',
             )
             self._record_timing('screw.reason.screw_approach_start', time.perf_counter() - screw_approach_start_time)
@@ -836,10 +850,16 @@ class ScrewPlanner(HierarchicalPlannerBase):
                     if retract_pick_plan is None:
                         return None
                     pick_plan = self._merge_plans(pick_plan, retract_pick_plan)
+            pick_plan.events['postpick'] = len(pick_plan.qs_list) - 1
             if prefix_plan is None:
                 prefix_plan = pick_plan
             else:
                 prefix_plan = self._merge_plans(prefix_plan, pick_plan)
+            pick_offset = 0 if prefix_depart_plan is None else len(prefix_depart_plan.qs_list) - 1
+            prefix_plan.events['prefix_end'] = None if prefix_depart_plan is None else len(prefix_depart_plan.qs_list) - 1
+            prefix_plan.events['prepick'] = pick_offset + int(pick_plan.events.get('approach_start', 0))
+            prefix_plan.events['pick'] = pick_offset + int(pick_plan.events.get('goal', len(pick_plan.qs_list) - 1))
+            prefix_plan.events['postpick'] = pick_offset + int(pick_plan.events.get('postpick', len(pick_plan.qs_list) - 1))
             current_state = pick_plan.qs_list[-1]
         for sid, record in candidate_map.items():
             result = record.screen_result
@@ -891,6 +911,8 @@ class ScrewPlanner(HierarchicalPlannerBase):
                         plan = None
                     else:
                         plan = self._merge_plans(connect_plan, linear_plan)
+                        plan.events['prescrew'] = len(connect_plan.qs_list) - 1
+                        plan.events['screw'] = len(plan.qs_list) - 1
             else:
                 plan = self.gen_approach(
                     goal_qs=goal_state,
@@ -903,8 +925,12 @@ class ScrewPlanner(HierarchicalPlannerBase):
                     use_rrt=use_rrt,
                     pln_jnt=pln_jnt,
                 )
+                if plan is not None:
+                    plan.events['prescrew'] = int(plan.events.get('approach_start', 0))
+                    plan.events['screw'] = int(plan.events.get('goal', len(plan.qs_list) - 1))
             if plan is not None:
                 if extended_ee_qs is not None and retracted_ee_qs is not None and approach_distance > 0.0:
+                    screw_idx = int(plan.events.get('screw', len(plan.qs_list) - 1))
                     retract_place_state = self._compose_with_ee_qs(plan.qs_list[-1], retracted_ee_qs)
                     if not oum.np.allclose(retract_place_state, plan.qs_list[-1]):
                         retract_place_plan = self._connect_motion(
@@ -917,22 +943,276 @@ class ScrewPlanner(HierarchicalPlannerBase):
                             plan = None
                         else:
                             plan = self._merge_plans(plan, retract_place_plan)
+                            plan.events['screw'] = screw_idx
+                            plan.events['retract'] = len(plan.qs_list) - 1
+                    else:
+                        plan.events['retract'] = len(plan.qs_list) - 1
+                elif plan is not None:
+                    plan.events['retract'] = len(plan.qs_list) - 1
             if plan is not None:
                 if prefix_plan is not None:
+                    offset = len(prefix_plan.qs_list) - 1
+                    suffix_events = {
+                        key: int(plan.events[key])
+                        for key in ('prescrew', 'screw', 'retract')
+                        if key in plan.events
+                    }
                     plan = self._merge_plans(prefix_plan, plan)
+                    if prefix_plan.events.get('prefix_end') is not None:
+                        plan.events['prefix_end'] = prefix_plan.events['prefix_end']
+                    for key in ('prepick', 'pick', 'postpick'):
+                        if key in prefix_plan.events:
+                            plan.events[key] = int(prefix_plan.events[key])
+                    for key, value in suffix_events.items():
+                        plan.events[key] = offset + value
                 plan.events['sid'] = sid
                 if toggle_dbg:
                     print(f'[screw] selected sid={sid}, waypoints={len(plan.qs_list)}')
                 return plan
             if toggle_dbg:
                 failure = self._last_plan_failure
+                next_sid = None
+                remaining_sids = [candidate_sid for candidate_sid in candidate_map.keys() if candidate_sid != sid]
+                if remaining_sids:
+                    next_sid = remaining_sids[0]
                 if failure is None:
-                    print(f'[screw] sid={sid} motion planning failed after reasoning')
+                    if next_sid is None:
+                        print(f'[screw] sid={sid} motion planning failed after reasoning')
+                    else:
+                        print(f'[screw] sid={sid} failed, trying next sid={next_sid}')
                 else:
-                    print(
-                        f'[screw] sid={sid} '
-                        f'{failure["stage"]} failed: {failure["reason"]}'
-                    )
+                    if next_sid is None:
+                        print(
+                            f'[screw] sid={sid} '
+                            f'{failure["stage"]} failed: {failure["reason"]}'
+                        )
+                    else:
+                        print(
+                            f'[screw] sid={sid} failed at {failure["stage"]}: '
+                            f'{failure["reason"]}, trying next sid={next_sid}'
+                        )
         if toggle_dbg:
             print('[screw] no feasible screw plan found')
         return None
+
+    def gen_screw_draft(self,
+                        work_name,
+                        goal_pose_list=None,
+                        start_qs=None,
+                        tgt_pos=None,
+                        tgt_vec=None,
+                        resolution=20,
+                        angle_offset=0.0,
+                        pick_pose_list=None,
+                        pick_pose=None,
+                        pick_qs=None,
+                        pick_approach_direction=None,
+                        pick_approach_distance=0.1,
+                        pick_depart_direction=None,
+                        pick_depart_distance=0.1,
+                        approach_direction=None,
+                        approach_distance=0.07,
+                        depart_direction=None,
+                        depart_distance=0.07,
+                        linear_granularity=0.03,
+                        use_rrt=True,
+                        pln_jnt=False,
+                        segment_label=None,
+                        end_sync_label=None,
+                        toggle_dbg=False):
+        plan = self.gen_screw(
+            goal_pose_list=goal_pose_list,
+            start_qs=start_qs,
+            tgt_pos=tgt_pos,
+            tgt_vec=tgt_vec,
+            resolution=resolution,
+            angle_offset=angle_offset,
+            pick_pose_list=pick_pose_list,
+            pick_pose=pick_pose,
+            pick_qs=pick_qs,
+            pick_approach_direction=pick_approach_direction,
+            pick_approach_distance=pick_approach_distance,
+            pick_depart_direction=pick_depart_direction,
+            pick_depart_distance=pick_depart_distance,
+            approach_direction=approach_direction,
+            approach_distance=approach_distance,
+            depart_direction=depart_direction,
+            depart_distance=depart_distance,
+            linear_granularity=linear_granularity,
+            use_rrt=use_rrt,
+            pln_jnt=pln_jnt,
+            toggle_dbg=toggle_dbg,
+        )
+        if plan is None:
+            return None
+        right_path = [
+            oum.np.asarray(qs[:self.robot.ndof], dtype=oum.np.float32).copy()
+            for qs in plan.qs_list
+        ]
+        right_ee_path = [
+            None if self._split_state(qs)[1] is None else oum.np.asarray(self._split_state(qs)[1], dtype=oum.np.float32).copy()
+            for qs in plan.qs_list
+        ]
+        shank_range = None
+        if self._supports_shank_extension():
+            shank_range = oum.np.asarray(self.ee_actor.shank_range, dtype=oum.np.float32).reshape(-1)
+
+        def _driver_event_for_transition(prev_ee_qs, next_ee_qs, timing, label):
+            if shank_range is None or prev_ee_qs is None or next_ee_qs is None:
+                return None
+            prev_val = float(oum.np.asarray(prev_ee_qs, dtype=oum.np.float32).reshape(-1)[0])
+            next_val = float(oum.np.asarray(next_ee_qs, dtype=oum.np.float32).reshape(-1)[0])
+            if abs(next_val - prev_val) <= 1e-6:
+                return None
+            action = 'extend' if next_val > prev_val else 'retract'
+            return EEEvent(
+                actor='right_driver',
+                action=action,
+                timing=timing,
+                value=next_val,
+                label=label,
+            )
+
+        def _seg(start_idx, end_idx, label, sync_label, ee_events=None):
+            if end_idx < start_idx:
+                return None
+            seg_path = [qs.copy() for qs in right_path[start_idx:end_idx + 1]]
+            if not seg_path:
+                return None
+            return PlannerSegmentDraft(
+                segment_label=label,
+                left_path=[],
+                right_path=seg_path,
+                ee_events=[] if ee_events is None else ee_events,
+                end_sync_label=sync_label,
+                held_after=None,
+            )
+
+        prefix_end = plan.events.get('prefix_end')
+        prepick = int(plan.events.get('prepick', 0))
+        pick_idx = int(plan.events.get('pick', prepick))
+        postpick = int(plan.events.get('postpick', pick_idx))
+        prescrew = int(plan.events.get('prescrew', postpick))
+        screw_idx = int(plan.events.get('screw', prescrew))
+        retract_idx = int(plan.events.get('retract', screw_idx))
+
+        segments = []
+        if prefix_end is not None:
+            seg = _seg(
+                0,
+                int(prefix_end),
+                f'clear for screwing {work_name}',
+                f'{work_name} screw_clear',
+            )
+            if seg is not None:
+                segments.append(seg)
+        seg = _seg(
+            0 if prefix_end is None else int(prefix_end),
+            prepick,
+            f'approach {work_name} prepick',
+            f'{work_name} prepick',
+            ee_events=[
+                event for event in [
+                    _driver_event_for_transition(
+                        right_ee_path[(0 if prefix_end is None else int(prefix_end))],
+                        right_ee_path[prepick],
+                        'end',
+                        f'prepare screwdriver before picking {work_name}',
+                    ),
+                ] if event is not None
+            ],
+        )
+        if seg is not None:
+            segments.append(seg)
+        seg = _seg(
+            prepick,
+            pick_idx,
+            f'pick {work_name}',
+            f'{work_name} pick',
+        )
+        if seg is not None:
+            segments.append(seg)
+        if postpick > pick_idx:
+            seg = _seg(
+                pick_idx,
+                postpick,
+                f'prepare {work_name} postpick',
+                f'{work_name} postpick',
+                ee_events=[
+                    event for event in [
+                        _driver_event_for_transition(
+                            right_ee_path[pick_idx],
+                            right_ee_path[postpick],
+                            'end',
+                            f'prepare screwdriver after picking {work_name}',
+                        ),
+                    ] if event is not None
+                ],
+            )
+            if seg is not None:
+                segments.append(seg)
+        if prescrew > postpick:
+            seg = _seg(
+                postpick,
+                prescrew,
+                f'approach {work_name} prescrew',
+                f'{work_name} prescrew',
+                ee_events=[
+                    event for event in [
+                        _driver_event_for_transition(
+                            right_ee_path[postpick],
+                            right_ee_path[prescrew],
+                            'end',
+                            f'extend screwdriver before screwing {work_name}',
+                        ),
+                    ] if event is not None
+                ],
+            )
+            if seg is not None:
+                segments.append(seg)
+        seg = _seg(
+            prescrew,
+            screw_idx,
+            f'screw {work_name}',
+            f'{work_name} screw',
+            ee_events=[
+                event for event in [
+                    _driver_event_for_transition(
+                        right_ee_path[prescrew],
+                        right_ee_path[screw_idx],
+                        'end',
+                        f'adjust screwdriver during screwing {work_name}',
+                    ),
+                ] if event is not None
+            ],
+        )
+        if seg is not None:
+            segments.append(seg)
+        if retract_idx > screw_idx:
+            seg = _seg(
+                screw_idx,
+                retract_idx,
+                segment_label or f'retract {work_name}',
+                end_sync_label or f'{work_name} retract',
+                ee_events=[EEEvent(
+                    actor='right_driver',
+                    action='retract',
+                    timing='end',
+                    value=float(self.ee_actor.shank_range[0]),
+                    label=f'retract screwdriver after {work_name}',
+                )],
+            )
+            if seg is not None:
+                segments.append(seg)
+        elif segments:
+            segments[-1].ee_events = list(segments[-1].ee_events or []) + [EEEvent(
+                actor='right_driver',
+                action='retract',
+                timing='end',
+                value=float(self.ee_actor.shank_range[0]),
+                label=f'retract screwdriver after {work_name}',
+            )]
+            segments[-1].end_sync_label = end_sync_label or segments[-1].end_sync_label
+            segments[-1].segment_label = segment_label or segments[-1].segment_label
+
+        return PlannerActionDraft(segments=segments, held_after=None)

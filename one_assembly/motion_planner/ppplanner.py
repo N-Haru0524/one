@@ -1,6 +1,7 @@
 from collections import Counter
 import time
 
+from one_assembly.assembly_data import EEEvent, HeldGrasp, PlannerActionDraft, PlannerSegmentDraft
 import one.motion.trajectory.cartesian as omtc
 import one.utils.math as oum
 
@@ -9,6 +10,14 @@ from .hierarchical import HierarchicalPlannerBase
 
 
 class PickPlacePlanner(HierarchicalPlannerBase):
+    def _grasp_event_payload(self, obj_pose, grasp):
+        pose_tf = oum.ensure_tf(obj_pose) @ oum.np.asarray(grasp[0], dtype=oum.np.float32)
+        pick_tf = oum.ensure_tf(obj_pose)
+        jaw_width = float(oum.np.asarray(grasp[2], dtype=oum.np.float32).reshape(-1)[0])
+        ee_base_tf = pose_tf @ oum.np.linalg.inv(self.ee_actor.loc_tcp_tf)
+        engage_tf = oum.np.linalg.inv(ee_base_tf) @ pick_tf
+        return jaw_width, engage_tf.astype(oum.np.float32)
+
     def _grasp_motion_params(self, grasp, obj_pose, direction=None, distance=0.0):
         if direction is not None:
             return direction, float(distance)
@@ -658,6 +667,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                 full_pick_plan = self._merge_plans(prefix_depart_plan, full_pick_plan)
             moveto_plan = utils.MotionData([full_pick_plan.qs_list[-1]])
             current_state = full_pick_plan.qs_list[-1]
+            goal_plan_events = []
             for goal_idx, goal_pose in enumerate(goal_pose_list):
                 goal_tf, goal_pre_tf, _goal_ee_qs = self._grasp_pose_motion(
                     grasp,
@@ -720,6 +730,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                                 f'{failure["stage"]} failed: {failure["reason"]}'
                             )
                     return None
+                goal_plan_events.append(dict(goal_plan.events))
                 moveto_plan = self._merge_plans(moveto_plan, goal_plan)
                 current_state = moveto_plan.qs_list[-1]
 
@@ -728,9 +739,17 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             attach_idx = len(pick_plan.qs_list) - 1
             if prefix_depart_plan is not None:
                 attach_idx += len(prefix_depart_plan.qs_list) - 1
+                full_plan.events['prefix_end'] = len(prefix_depart_plan.qs_list) - 1
+            full_plan.events['pick_pre'] = int(pick_plan.events.get('via', 0)) + (
+                0 if prefix_depart_plan is None else len(prefix_depart_plan.qs_list) - 1
+            )
             if prepend_release and open_ee_qs is not None:
                 full_plan.events['pre_release'] = 0
             full_plan.events['attach'] = attach_idx
+            full_plan.events['post_attach'] = len(full_pick_plan.qs_list) - 1
+            if goal_plan_events:
+                goal0_via = int(goal_plan_events[0].get('via', 0))
+                full_plan.events['place_pre'] = len(full_pick_plan.qs_list) - 1 + goal0_via
             full_plan.events['gid'] = gid
             return full_plan
         finally:
@@ -839,7 +858,9 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                                 f'{failure["reason"]}, trying next gid={next_gid}'
                             )
                     continue
-                if not release_at_end:
+                if release_at_end:
+                    full_plan.events['release'] = len(full_plan.qs_list) - 1
+                else:
                     full_plan.events.pop('release', None)
                 if toggle_dbg:
                     print(f'[pickplace] selected gid={gid}, waypoints={len(full_plan.qs_list)}')
@@ -850,3 +871,173 @@ class PickPlacePlanner(HierarchicalPlannerBase):
             return None
         finally:
             self._record_timing('pickplace.total', time.perf_counter() - total_start_time)
+
+    def gen_place_draft(self,
+                        obj_model,
+                        work_name,
+                        grasp_collection,
+                        goal_pose_list,
+                        segment_label=None,
+                        end_sync_label=None,
+                        keep_holding=False,
+                        start_qs=None,
+                        pick_approach_direction=None,
+                        pick_approach_distance=0.1,
+                        pick_depart_direction=None,
+                        pick_depart_distance=0.1,
+                        approach_direction=None,
+                        approach_distance=0.07,
+                        depart_direction=None,
+                        depart_distance=0.07,
+                        linear_granularity=0.03,
+                        reason_grasps=True,
+                        use_rrt=True,
+                        pln_jnt=False,
+                        preferred_gid=None,
+                        toggle_dbg=False):
+        plan = self.gen_pick_and_place(
+            obj_model=obj_model,
+            grasp_collection=grasp_collection,
+            goal_pose_list=goal_pose_list,
+            start_qs=start_qs,
+            pick_approach_direction=pick_approach_direction,
+            pick_approach_distance=pick_approach_distance,
+            pick_depart_direction=pick_depart_direction,
+            pick_depart_distance=pick_depart_distance,
+            approach_direction=approach_direction,
+            approach_distance=approach_distance,
+            depart_direction=depart_direction,
+            depart_distance=depart_distance,
+            linear_granularity=linear_granularity,
+            reason_grasps=reason_grasps,
+            use_rrt=use_rrt,
+            pln_jnt=pln_jnt,
+            preferred_gid=preferred_gid,
+            release_at_end=not keep_holding,
+            toggle_dbg=toggle_dbg,
+        )
+        if plan is None:
+            return None
+
+        left_path = [
+            oum.np.asarray(qs[:self.robot.ndof], dtype=oum.np.float32).copy()
+            for qs in plan.qs_list
+        ]
+        selected_gid = int(plan.events['gid']) if 'gid' in plan.events else None
+        grasp = None
+        if selected_gid is not None and 0 <= selected_gid < len(grasp_collection):
+            grasp = grasp_collection[selected_gid]
+
+        jaw_width = None
+        engage_tf = None
+        if grasp is not None:
+            pick_pose_tf = oum.tf_from_rotmat_pos(obj_model.rotmat, obj_model.pos)
+            jaw_width, engage_tf = self._grasp_event_payload(
+                obj_pose=pick_pose_tf,
+                grasp=grasp,
+            )
+
+        held_after = None
+        if keep_holding and selected_gid is not None:
+            held_after = HeldGrasp(work_name=work_name, gid=selected_gid)
+
+        pre_open_events = [EEEvent(
+            actor='left_gripper',
+            action='open',
+            timing='start',
+            label=f'open before picking {work_name}',
+        )] if 'pre_release' in plan.events else []
+        segment_specs = []
+        if 'prefix_end' in plan.events:
+            segment_specs.append((
+                0,
+                int(plan.events['prefix_end']),
+                f'clear for picking {work_name}',
+                f'{work_name} pick_clear',
+                pre_open_events,
+            ))
+            pre_open_events = []
+
+        pick_start = 0 if 'prefix_end' not in plan.events else int(plan.events['prefix_end'])
+        pick_pre = int(plan.events.get('pick_pre', pick_start))
+        attach_idx = int(plan.events['attach'])
+        post_attach = int(plan.events.get('post_attach', attach_idx))
+        place_pre = int(plan.events.get('place_pre', post_attach))
+        release_idx = int(plan.events.get('release', len(left_path) - 1))
+
+        segment_specs.append((
+            pick_start,
+            pick_pre,
+            f'approach {work_name} pregrasp',
+            f'{work_name} pregrasp',
+            pre_open_events,
+        ))
+        segment_specs.append((
+            pick_pre,
+            attach_idx,
+            f'grasp {work_name}',
+            f'{work_name} grasp',
+            [EEEvent(
+                actor='left_gripper',
+                action='attach',
+                timing='end',
+                value=jaw_width,
+                work_name=work_name,
+                grasp_id=selected_gid,
+                engage_tf=engage_tf,
+                label=f'attach {work_name}',
+            )],
+        ))
+        if post_attach > attach_idx:
+            segment_specs.append((
+                attach_idx,
+                post_attach,
+                f'lift {work_name}',
+                f'{work_name} postgrasp',
+                [],
+            ))
+        if place_pre > post_attach:
+            segment_specs.append((
+                post_attach,
+                place_pre,
+                f'transport {work_name}',
+                f'{work_name} preplace',
+                [],
+            ))
+        place_events = []
+        if not keep_holding and 'release' in plan.events:
+            place_events.append(EEEvent(
+                actor='left_gripper',
+                action='release',
+                timing='end',
+                work_name=work_name,
+                label=f'release {work_name}',
+            ))
+        segment_specs.append((
+            place_pre,
+            release_idx,
+            segment_label or f'place {work_name}',
+            end_sync_label or f'{work_name} place',
+            place_events,
+        ))
+
+        segments = []
+        for start_idx, end_idx, seg_label, sync_label, ee_events in segment_specs:
+            if end_idx < start_idx:
+                continue
+            seg_path = [qs.copy() for qs in left_path[start_idx:end_idx + 1]]
+            if not seg_path:
+                continue
+            segments.append(PlannerSegmentDraft(
+                segment_label=seg_label,
+                left_path=seg_path,
+                right_path=[],
+                ee_events=ee_events,
+                end_sync_label=sync_label,
+                held_after=None,
+            ))
+
+        return PlannerActionDraft(
+            segments=segments,
+            held_after=held_after,
+        )
