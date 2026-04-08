@@ -154,6 +154,7 @@ class KHIBunriRS007L(orkrs.RS007L):
         return filtered
 
     def _ik_active(self, tgt_rotmat, tgt_pos, max_solutions=None, ref_qs=None, toggle_dbg=False):
+        del toggle_dbg
         tgt_tcp_tf = oum.tf_from_rotmat_pos(tgt_rotmat, tgt_pos)
         tgt_lastlnk_tf = tgt_tcp_tf @ np.linalg.inv(
             self._loc_flange_tf @ self._loc_tcp_tf
@@ -170,52 +171,9 @@ class KHIBunriRS007L(orkrs.RS007L):
             max_solutions=max_solutions,
             ref_qs=ref_qs_active,
         )
-        if toggle_dbg:
-            print(
-                '[khi_bunri ik] '
-                f'raw_count={len(ik_results)}, '
-                f'tgt_pos={np.round(tgt_pos, 6).tolist()}, '
-                f'tgt_rot_row0={np.round(tgt_rotmat[0], 6).tolist()}'
-            )
         if len(ik_results) == 0:
             return []
-        if not toggle_dbg:
-            return self._filter_active_joint_limits(ik_results, ref_qs=ref_qs_active)
-
-        filtered = []
-        dropped = []
-        for sol_idx, qs_active in enumerate(ik_results):
-            normalized, debug_info = self._normalize_active_qs_to_limits(
-                qs_active,
-                ref_qs=ref_qs_active,
-                return_debug=True,
-            )
-            if normalized is not None:
-                filtered.append(normalized)
-                continue
-            failed_joint_idx = debug_info['failed_joint_idx']
-            joint_row = debug_info['joint_rows'][failed_joint_idx]
-            dropped.append({
-                'sol_idx': sol_idx,
-                'failed_joint_idx': failed_joint_idx,
-                'raw_q': joint_row['raw_q'],
-                'limit_lo': joint_row['limit_lo'],
-                'limit_up': joint_row['limit_up'],
-            })
-        print(
-            '[khi_bunri ik] '
-            f'filtered_count={len(filtered)}, '
-            f'dropped_count={len(dropped)}'
-        )
-        for item in dropped[:8]:
-            print(
-                '[khi_bunri ik] '
-                f'drop sol={item["sol_idx"]}, '
-                f'joint={item["failed_joint_idx"]}, '
-                f'raw_q={item["raw_q"]:.6f}, '
-                f'limit=[{item["limit_lo"]:.6f}, {item["limit_up"]:.6f}]'
-            )
-        return filtered
+        return self._filter_active_joint_limits(ik_results, ref_qs=ref_qs_active)
 
     def ik_tcp(self, tgt_rotmat, tgt_pos, max_solutions=8, toggle_dbg=False):
         ik_results = self._ik_active(
