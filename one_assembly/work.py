@@ -20,7 +20,7 @@ Pose = Tuple[np.ndarray, np.ndarray]
 
 
 def _default_asset_root() -> str:
-    asset_root = os.path.join(os.path.dirname(__file__), 'worklists', 'move_object')
+    asset_root = os.path.join(os.path.dirname(__file__), 'worklists', 'electric_assembly')
     if not os.path.isdir(asset_root):
         raise FileNotFoundError(f'Assembly asset root not found: {asset_root}')
     return asset_root
