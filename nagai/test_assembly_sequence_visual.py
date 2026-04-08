@@ -310,6 +310,31 @@ def boundary_state_for_segment(playback: SynchronizedPlan, segment_idx: int) -> 
     return state
 
 
+def format_joint_degrees(qs: np.ndarray) -> list[float]:
+    return np.round(np.rad2deg(np.asarray(qs, dtype=np.float32)), 1).tolist()
+
+
+def print_plan_joint_report(playback: SynchronizedPlan):
+    if playback.initial_state is None:
+        return
+    state = playback.initial_state.copy()
+    sync_label_map = {sync_point.id: sync_point.label for sync_point in playback.sync_points}
+    print('[planned joint angles deg]')
+    print(
+        f'  {sync_label_map.get(playback.sync_points[0].id, playback.sync_points[0].id)}: '
+        f'left={format_joint_degrees(state.lft_qs)}, '
+        f'right={format_joint_degrees(state.rgt_qs)}'
+    )
+    for segment in playback.sync_segments:
+        state = end_state_after_segment(state, segment)
+        sync_label = sync_label_map.get(segment.end_sync_id, segment.end_sync_id)
+        print(
+            f'  {sync_label}: '
+            f'left={format_joint_degrees(state.lft_qs)}, '
+            f'right={format_joint_degrees(state.rgt_qs)}'
+        )
+
+
 def build_sync_segment_from_draft(segment_id: str,
                                   start_sync_id: str,
                                   end_sync_id: str,
@@ -381,7 +406,7 @@ def plan_place_action(robot: KHIBunri,
         keep_holding=keep_holding,
         toggle_dbg=False,
     )
-    # print_timing_report(planner, f'pick/place {target_work.name}')
+    print_timing_report(planner, f'pick/place {target_work.name}')
     if draft is None:
         print(f'pick/place failed for {target_work.name}')
         return None
@@ -454,7 +479,7 @@ def plan_screw_action(robot: KHIBunri,
         state,
         pick_pose,
         roll_resolution=screw_resolution,
-        toggle_dbg=False,
+        toggle_dbg=True,
     )
     if not pick_pose_list:
         print(f'no valid screw pickup pose for {target_work.name}')
@@ -475,10 +500,17 @@ def plan_screw_action(robot: KHIBunri,
         pln_jnt=False,
         segment_label=f'screw {target_work.name}',
         end_sync_label=action.label,
-        toggle_dbg=False,
+        toggle_dbg=True,
     )
     if draft is None:
-        print(f'screw failed for {target_work.name}')
+        failure = getattr(planner, '_last_plan_failure', None)
+        if failure is not None:
+            print(
+                f'screw failed for {target_work.name}: '
+                f'{failure["stage"]} {failure["reason"]}'
+            )
+        else:
+            print(f'screw failed for {target_work.name}')
         return None
     return draft
 
@@ -488,22 +520,48 @@ def resolve_screw_pick_pose_candidates(planner: ScrewPlanner,
                                        pick_pose,
                                        roll_resolution=12,
                                        toggle_dbg=False):
+    def _raw_active_ik_count(roll_pose, ref_qs, ee_qs):
+        planner._sync_robot_tcp_from_ee_qs(planner.robot, ee_qs=ee_qs)
+        pick_tf = planner._pose_to_tf(roll_pose)
+        tgt_lastlnk_tf = pick_tf @ np.linalg.inv(
+            planner.robot._loc_flange_tf @ planner.robot._loc_tcp_tf
+        )
+        ref_qs_active = planner.robot._chain.extract_active_qs(np.asarray(ref_qs, dtype=np.float32))
+        raw_ik = planner.robot._solver.ik(
+            root_rotmat=planner.robot.rotmat,
+            root_pos=planner.robot.pos,
+            tgt_rotmat=tgt_lastlnk_tf[:3, :3],
+            tgt_pos=tgt_lastlnk_tf[:3, 3],
+            max_solutions=None,
+            ref_qs=ref_qs_active,
+        )
+        return 0 if raw_ik is None else len(raw_ik)
+
     ref_qs = state.rgt_qs.astype(np.float32)
     roll_candidates = planner.gen_pose_roll_candidates(pick_pose, resolution=roll_resolution)
     valid_roll_poses = []
-    for roll_idx, roll_pose in enumerate(roll_candidates):
-        candidate_state = planner._pick_state(pick_pose=roll_pose, ref_qs=ref_qs)
-        if candidate_state is None:
+    prev_ee_qs = planner._active_ee_qs_for_ik
+    planner._active_ee_qs_for_ik = planner._extended_ee_qs()
+    try:
+        for roll_idx, roll_pose in enumerate(roll_candidates):
+            candidate_state = planner._pick_state(pick_pose=roll_pose, ref_qs=ref_qs)
+            if candidate_state is None:
+                if toggle_dbg:
+                    raw_count = _raw_active_ik_count(roll_pose, ref_qs, planner._active_ee_qs_for_ik)
+                    print(
+                        f'[screw_pick] roll_idx={roll_idx}, '
+                        f'pick_state=None, raw_ik_count={raw_count}'
+                    )
+                continue
             if toggle_dbg:
-                print(f'[screw_pick] roll_idx={roll_idx}, pick_state=None')
-            continue
-        if toggle_dbg:
-            print(
-                '[screw_pick] '
-                f'roll_idx={roll_idx}, pick_state=1, '
-                f'candidate_pos={roll_pose[0].tolist()}'
-            )
-        valid_roll_poses.append(roll_pose)
+                print(
+                    '[screw_pick] '
+                    f'roll_idx={roll_idx}, pick_state=1, '
+                    f'candidate_pos={roll_pose[0].tolist()}'
+                )
+            valid_roll_poses.append(roll_pose)
+    finally:
+        planner._active_ee_qs_for_ik = prev_ee_qs
     return valid_roll_poses
 
 
@@ -733,6 +791,7 @@ def main():
         raise RuntimeError('Failed to build a feasible playback plan for the selected leaves')
 
     print(f'selected leaf: {playback.labels}')
+    print_plan_joint_report(playback)
     held = {'name': None}
     counter = {'segment_idx': 0, 'sample_idx': 0}
     root_work_state = reset_work_state(worklist, layout_name=args.layout)

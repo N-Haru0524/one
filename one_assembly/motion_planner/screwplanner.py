@@ -43,9 +43,38 @@ class ScrewPlanner(HierarchicalPlannerBase):
         self._sync_robot_tcp_from_ee_qs(self._scratch_robot, ee_qs=ee_qs)
         return self._scratch_robot
 
-    def _sorted_ik_solutions(self, tgt_pos, tgt_rotmat, ref_qs):
+    def _sorted_ik_solutions(self, tgt_pos, tgt_rotmat, ref_qs, toggle_dbg=False):
         self._sync_robot_tcp_from_ee_qs(self.robot, ee_qs=self._active_ee_qs_for_ik)
-        return super()._sorted_ik_solutions(tgt_pos=tgt_pos, tgt_rotmat=tgt_rotmat, ref_qs=ref_qs)
+        return super()._sorted_ik_solutions(
+            tgt_pos=tgt_pos,
+            tgt_rotmat=tgt_rotmat,
+            ref_qs=ref_qs,
+            toggle_dbg=toggle_dbg,
+        )
+
+    def _loc_tcp_tf_for_ee_qs(self, ee_qs=None):
+        if self.ee_actor is None or ee_qs is None:
+            return oum.np.asarray(self.robot._loc_tcp_tf, dtype=oum.np.float32).copy()
+        if self.ee_actor not in self.robot._mountings:
+            return oum.np.asarray(self.robot._loc_tcp_tf, dtype=oum.np.float32).copy()
+        ee_clone = self.ee_actor.clone()
+        ee_clone.fk(qs=ee_qs)
+        mounting = self.robot._mountings[self.ee_actor]
+        return (mounting.engage_tf @ ee_clone.loc_tcp_tf).astype(oum.np.float32)
+
+    def _sort_pose_candidates_by_flange(self, pose_tf_list, ref_qs):
+        ref_qs = oum.np.asarray(ref_qs, dtype=oum.np.float32)
+        ref_robot = self.robot.clone()
+        ref_robot.fk(qs=ref_qs)
+        current_flange_tf = ref_robot.gl_flange_tf.copy()
+
+        def sort_key(item):
+            _key, pose_tf, ee_qs = item
+            loc_tcp_tf = self._loc_tcp_tf_for_ee_qs(ee_qs=ee_qs)
+            flange_tf = pose_tf @ oum.tf_inverse(loc_tcp_tf)
+            return self._pose_error(current_flange_tf, flange_tf)
+
+        return sorted(pose_tf_list, key=sort_key)
 
     def _screen_pose_with_stats(self,
                                 tcp_pos,
@@ -62,7 +91,8 @@ class ScrewPlanner(HierarchicalPlannerBase):
                                 timing_prefix=None,
                                 diagnose_collision_pairs=False,
                                 debug_visualize_contacts=False,
-                                debug_contact_rgb=None):
+                                debug_contact_rgb=None,
+                                toggle_dbg=False):
         prev_ee_qs = self._active_ee_qs_for_ik
         self._active_ee_qs_for_ik = None if ee_qs is None else oum.np.asarray(ee_qs, dtype=oum.np.float32)
         try:
@@ -82,6 +112,7 @@ class ScrewPlanner(HierarchicalPlannerBase):
                 diagnose_collision_pairs=diagnose_collision_pairs,
                 debug_visualize_contacts=debug_visualize_contacts,
                 debug_contact_rgb=debug_contact_rgb,
+                toggle_dbg=toggle_dbg,
             )
         finally:
             self._active_ee_qs_for_ik = prev_ee_qs
@@ -400,6 +431,7 @@ class ScrewPlanner(HierarchicalPlannerBase):
                 exclude_entities=exclude_entities,
                 backend=self.transit_backend,
             )
+            self._last_screw_pick_transit_pln_ctx = pick_transit_pln_ctx
             pick_goal_arm_pln_ctx = self._arm_only_goal_pln_ctx(
                 exclude_entities=exclude_entities,
             )
@@ -457,6 +489,7 @@ class ScrewPlanner(HierarchicalPlannerBase):
                 )
 
             self._last_reason_common_screw_pick_record = None
+            self._last_reason_common_screw_pick_approach_record_map = {}
             filtered_pose_tf_list = []
             grasp_reason_counts = {
                 'goal_collision': 0,
@@ -473,6 +506,7 @@ class ScrewPlanner(HierarchicalPlannerBase):
                 self._last_reason_common_screw_report['survived_sids'] = []
                 return {}
             current_ref_qs = ref_qs.copy()
+            screw_seed_qs = ref_qs.copy()
             pick_pose_entries = []
             if pick_pose_list is not None:
                 pick_pose_entries = [(idx, self._pose_to_tf(pose), None) for idx, pose in enumerate(pick_pose_list)]
@@ -491,6 +525,16 @@ class ScrewPlanner(HierarchicalPlannerBase):
                             motion_type='sink',
                         )
                         pre_entries.append((pid, pick_pre_tf, shank_extend_pick))
+                    if toggle_dbg:
+                        print('[screw_reason pick_approach_start debug] '
+                              f'home_ref_qs_deg={oum.np.round(oum.np.rad2deg(current_ref_qs), 1).tolist()}')
+                        for pid, pick_pre_tf, _ee_qs in pre_entries:
+                            print(
+                                '  '
+                                f'pid={pid}, '
+                                f'pre_pos={oum.np.round(pick_pre_tf[:3, 3], 4).tolist()}, '
+                                f'pre_z={oum.np.round(pick_pre_tf[:3, 2], 4).tolist()}'
+                            )
                     pick_approach_start_time = time.perf_counter()
                     pick_records = self._screen_pose_list(
                         pre_entries,
@@ -498,7 +542,8 @@ class ScrewPlanner(HierarchicalPlannerBase):
                         linear_granularity=linear_granularity,
                         ref_qs=current_ref_qs,
                         timing_prefix='screw.reason.pick_approach_start.detail',
-                        toggle_dbg=False,
+                        update_ref_qs=False,
+                        toggle_dbg=toggle_dbg,
                         debug_label='screw_reason pick_approach_start',
                     )
                     self._record_timing('screw.reason.pick_approach_start', time.perf_counter() - pick_approach_start_time)
@@ -534,6 +579,10 @@ class ScrewPlanner(HierarchicalPlannerBase):
                         return {}
                     pick_ref_qs_map = {
                         record.key: record.screen_result.goal_qs[:self.robot.ndof].copy()
+                        for record in pick_records
+                    }
+                    self._last_reason_common_screw_pick_approach_record_map = {
+                        record.key: record
                         for record in pick_records
                     }
                 else:
@@ -579,6 +628,18 @@ class ScrewPlanner(HierarchicalPlannerBase):
                         for pair, count in pick_goal_stats.get('collision_pairs', []):
                             pick_goal_pair_counts[pair] += count
                         continue
+                    postpick_state = pick_goal_result.goal_qs
+                    if pick_goal_result.depart_plan is not None and pick_goal_result.depart_plan.qs_list:
+                        postpick_state = oum.np.asarray(
+                            pick_goal_result.depart_plan.qs_list[-1],
+                            dtype=oum.np.float32,
+                        )
+                    if not self.pln_ctx.is_state_valid(postpick_state):
+                        record_failure(record.key, 'pick_goal', 'postpick_state_in_collision', pick_tf)
+                        pick_goal_reason_counts['postpick_state_in_collision'] = (
+                            pick_goal_reason_counts.get('postpick_state_in_collision', 0) + 1
+                        )
+                        continue
                     next_pick_records.append(CandidateRecord(key=record.key, pose_tf=pick_tf, screen_result=pick_goal_result))
                 self._record_timing('screw.reason.pick_goal', time.perf_counter() - pick_goal_start_time)
                 print_stage_stats(
@@ -598,7 +659,16 @@ class ScrewPlanner(HierarchicalPlannerBase):
                     self._last_reason_common_screw_report['survived_sids'] = []
                     return {}
                 self._last_reason_common_screw_pick_record = next_pick_records[0]
-                current_ref_qs = next_pick_records[0].screen_result.goal_qs[:self.robot.ndof].copy()
+                postpick_ref_state = next_pick_records[0].screen_result.goal_qs
+                if (
+                    next_pick_records[0].screen_result.depart_plan is not None and
+                    next_pick_records[0].screen_result.depart_plan.qs_list
+                ):
+                    postpick_ref_state = oum.np.asarray(
+                        next_pick_records[0].screen_result.depart_plan.qs_list[-1],
+                        dtype=oum.np.float32,
+                    )
+                current_ref_qs = postpick_ref_state[:self.robot.ndof].copy()
 
             approach_entries = []
             for sid, pose_tf, ee_qs in pose_tf_list:
@@ -614,6 +684,10 @@ class ScrewPlanner(HierarchicalPlannerBase):
                     pre_tf = pose_tf
                 entry_ee_qs = shank_extend_place if approach_distance > 0.0 else ee_qs
                 approach_entries.append((sid, pre_tf, entry_ee_qs))
+            sorted_approach_entries = self._sort_pose_candidates_by_flange(
+                approach_entries,
+                ref_qs=screw_seed_qs,
+            )
 
             debug_entries = [
                 {
@@ -623,33 +697,35 @@ class ScrewPlanner(HierarchicalPlannerBase):
                     'pln_ctx': screw_transit_pln_ctx,
                     'ref_qs': current_ref_qs.copy(),
                 }
-                for sid, pre_tf, ee_qs in approach_entries
+                for sid, pre_tf, ee_qs in sorted_approach_entries
             ]
             screw_approach_start_time = time.perf_counter()
             approach_records = self._screen_pose_list(
-                approach_entries,
+                sorted_approach_entries,
                 pln_ctx=screw_transit_pln_ctx,
                 linear_granularity=linear_granularity,
-                ref_qs=current_ref_qs,
+                ref_qs=screw_seed_qs,
                 timing_prefix='screw.reason.screw_approach_start.detail',
-                toggle_dbg=False,
+                preserve_order=True,
+                update_ref_qs=False,
+                toggle_dbg=toggle_dbg,
                 debug_label='screw_reason screw_approach_start',
             )
             self._record_timing('screw.reason.screw_approach_start', time.perf_counter() - screw_approach_start_time)
             survived_approach_ids = {record.key for record in approach_records}
             approach_reason_counts = {'unreachable_approach': 0}
-            for sid, pre_tf, _ee_qs in approach_entries:
+            for sid, pre_tf, _ee_qs in sorted_approach_entries:
                 if sid not in survived_approach_ids:
                     record_failure(sid, 'screw_approach_start', 'unreachable_approach', pre_tf)
                     approach_reason_counts['unreachable_approach'] += 1
             print_stage_stats(
                 'screw_reason screw_approach_start',
-                len(approach_entries),
+                len(sorted_approach_entries),
                 len(approach_records),
                 approach_reason_counts,
             )
             if not approach_records:
-                if toggle_dbg and approach_entries:
+                if toggle_dbg and sorted_approach_entries:
                     self._debug_visualize_failed_pose_entries(
                         label='screw_reason screw_approach_start',
                         debug_entries=debug_entries,
@@ -661,10 +737,6 @@ class ScrewPlanner(HierarchicalPlannerBase):
             next_records = []
             self._last_reason_common_screw_approach_record_map = {
                 record.key: record
-                for record in approach_records
-            }
-            next_ref_qs_map = {
-                record.key: record.screen_result.goal_qs[:self.robot.ndof].copy()
                 for record in approach_records
             }
             reason_counts = {}
@@ -686,7 +758,7 @@ class ScrewPlanner(HierarchicalPlannerBase):
                     depart_direction=place_depart_direction,
                     depart_distance=place_depart_distance,
                     linear_granularity=linear_granularity,
-                    ref_qs=next_ref_qs_map[sid],
+                    ref_qs=screw_seed_qs,
                     timing_prefix='screw.reason.goal.detail',
                     diagnose_collision_pairs=toggle_dbg,
                     debug_visualize_contacts=toggle_dbg,
@@ -812,21 +884,109 @@ class ScrewPlanner(HierarchicalPlannerBase):
         if pick_state is not None:
             if extended_ee_qs is not None and (pick_approach_distance > 0.0 or pick_depart_distance > 0.0):
                 pick_state = self._compose_with_ee_qs(pick_state, extended_ee_qs)
-            pick_plan = self.gen_approach_depart(
-                goal_qs=pick_state,
-                start_qs=current_state,
-                end_qs=None,
-                approach_direction=pick_approach_direction,
-                approach_distance=pick_approach_distance,
-                depart_direction=pick_depart_direction,
-                depart_distance=pick_depart_distance,
-                approach_linear=pick_approach_distance > 0.0,
-                depart_linear=pick_depart_distance > 0.0,
-                linear_granularity=linear_granularity,
-                pln_ctx=self.pln_ctx,
-                use_rrt=use_rrt,
-                pln_jnt=pln_jnt,
-            )
+            pick_approach_record_map = getattr(self, '_last_reason_common_screw_pick_approach_record_map', {})
+            pick_approach_record = None if pick_record is None else pick_approach_record_map.get(pick_record.key)
+            if pick_approach_record is not None and pick_approach_distance > 0.0:
+                pick_motion_pln_ctx = getattr(self, '_last_screw_pick_transit_pln_ctx', self.pln_ctx)
+                via_state = self._compose_with_ee_qs(
+                    pick_approach_record.screen_result.goal_qs,
+                    extended_ee_qs,
+                )
+                pick_start2via = self._connect_motion(
+                    start_qs=current_state,
+                    goal_qs=via_state,
+                    ee_values=extended_ee_qs,
+                    pln_ctx=pick_motion_pln_ctx,
+                    use_rrt=use_rrt,
+                    timing_label='screw_pick_via.start_to_via',
+                )
+                if pick_start2via is None:
+                    direct_path = utils.interpolate_qs(
+                        oum.np.asarray(current_state, dtype=oum.np.float32),
+                        oum.np.asarray(via_state, dtype=oum.np.float32),
+                        step_size=oum.pi / 36,
+                    )
+                    direct_valid = utils.path_is_valid(direct_path, pick_motion_pln_ctx)
+                    if direct_valid:
+                        pick_start2via = self._motion_plan(direct_path)
+                    elif toggle_dbg:
+                        start_valid = pick_motion_pln_ctx.is_state_valid(
+                            oum.np.asarray(current_state, dtype=oum.np.float32)
+                        )
+                        via_valid = pick_motion_pln_ctx.is_state_valid(
+                            oum.np.asarray(via_state, dtype=oum.np.float32)
+                        )
+                        print(
+                            '[screw_pick_via_connect debug] '
+                            f'start_valid={start_valid}, '
+                            f'via_valid={via_valid}, '
+                            f'direct_valid={direct_valid}, '
+                            f'direct_points={len(direct_path)}, '
+                            f'start_deg={oum.np.round(oum.np.rad2deg(current_state[:self.robot.ndof]), 1).tolist()}, '
+                            f'via_deg={oum.np.round(oum.np.rad2deg(via_state[:self.robot.ndof]), 1).tolist()}'
+                        )
+                    if pick_start2via is None:
+                        self._set_last_plan_failure('screw_pick_via_connect', 'connect_failed')
+                        pick_plan = None
+                if pick_start2via is not None:
+                    pick_app_linear = self._linear_motion_between_poses(
+                        start_pos=pick_approach_record.pose_tf[:3, 3],
+                        start_rotmat=pick_approach_record.pose_tf[:3, :3],
+                        goal_pos=pick_record.pose_tf[:3, 3],
+                        goal_rotmat=pick_record.pose_tf[:3, :3],
+                        seed_qs=via_state,
+                        ee_values=extended_ee_qs,
+                        pln_ctx=pick_motion_pln_ctx,
+                        pos_step=linear_granularity,
+                    )
+                    if pick_app_linear is None:
+                        pick_plan = None
+                    else:
+                        pick_app = self._merge_plans(pick_start2via, pick_app_linear)
+                    if pick_app is None:
+                        pick_plan = None
+                    else:
+                        pick_dep = self.gen_depart(
+                            goal_qs=pick_state,
+                            end_qs=None,
+                            depart_direction=pick_depart_direction,
+                            depart_distance=pick_depart_distance,
+                            linear=pick_depart_distance > 0.0,
+                            linear_granularity=linear_granularity,
+                            pln_ctx=pick_motion_pln_ctx,
+                            use_rrt=use_rrt,
+                            pln_jnt=pln_jnt,
+                        )
+                        if pick_dep is None:
+                            pick_plan = None
+                        elif len(pick_app.qs_list) <= 1:
+                            pick_plan = pick_dep
+                            pick_plan.events['approach_start'] = 0
+                        else:
+                            pick_app_prefix = utils.MotionData(pick_app.qs_list[:-1])
+                            pick_plan = self._merge_plans(pick_app_prefix, pick_dep)
+                            pick_plan.events['approach_start'] = len(pick_start2via.qs_list) - 1
+                            pick_offset = len(pick_app_prefix.qs_list)
+                            pick_plan.events['goal'] = pick_offset + int(pick_dep.events.get('goal', 0))
+                            pick_plan.events['depart_end'] = pick_offset + int(
+                                pick_dep.events.get('depart_end', len(pick_dep.qs_list) - 1)
+                            )
+            else:
+                pick_plan = self.gen_approach_depart(
+                    goal_qs=pick_state,
+                    start_qs=current_state,
+                    end_qs=None,
+                    approach_direction=pick_approach_direction,
+                    approach_distance=pick_approach_distance,
+                    depart_direction=pick_depart_direction,
+                    depart_distance=pick_depart_distance,
+                    approach_linear=pick_approach_distance > 0.0,
+                    depart_linear=pick_depart_distance > 0.0,
+                    linear_granularity=linear_granularity,
+                    pln_ctx=self.pln_ctx,
+                    use_rrt=use_rrt,
+                    pln_jnt=pln_jnt,
+                )
             if pick_plan is None:
                 if toggle_dbg:
                     failure = self._last_plan_failure
@@ -838,17 +998,45 @@ class ScrewPlanner(HierarchicalPlannerBase):
                             f'{failure["stage"]} {failure["reason"]}'
                         )
                 return None
-            if extended_ee_qs is not None and retracted_ee_qs is not None:
+            # Keep the screwdriver extended after pickup. The next screw phase
+            # immediately transitions into extended-tool approach states, and
+            # retracting here creates an invalid intermediate state.
+            if False and extended_ee_qs is not None and retracted_ee_qs is not None:
                 retract_pick_state = self._compose_with_ee_qs(pick_plan.qs_list[-1], retracted_ee_qs)
                 if not oum.np.allclose(retract_pick_state, pick_plan.qs_list[-1]):
+                    pick_motion_pln_ctx = getattr(self, '_last_screw_pick_transit_pln_ctx', self.pln_ctx)
                     retract_pick_plan = self._connect_motion(
                         start_qs=pick_plan.qs_list[-1],
                         goal_qs=retract_pick_state,
-                        pln_ctx=self.pln_ctx,
+                        pln_ctx=pick_motion_pln_ctx,
                         use_rrt=False,
                     )
                     if retract_pick_plan is None:
-                        return None
+                        direct_path = utils.interpolate_qs(
+                            oum.np.asarray(pick_plan.qs_list[-1], dtype=oum.np.float32),
+                            oum.np.asarray(retract_pick_state, dtype=oum.np.float32),
+                            step_size=oum.pi / 36,
+                        )
+                        if utils.path_is_valid(direct_path, pick_motion_pln_ctx):
+                            retract_pick_plan = self._motion_plan(direct_path)
+                        else:
+                            if toggle_dbg:
+                                start_valid = pick_motion_pln_ctx.is_state_valid(
+                                    oum.np.asarray(pick_plan.qs_list[-1], dtype=oum.np.float32)
+                                )
+                                goal_valid = pick_motion_pln_ctx.is_state_valid(
+                                    oum.np.asarray(retract_pick_state, dtype=oum.np.float32)
+                                )
+                                print(
+                                    '[screw_pick_retract debug] '
+                                    f'start_valid={start_valid}, '
+                                    f'goal_valid={goal_valid}, '
+                                    f'direct_valid=False, '
+                                    f'start_deg={oum.np.round(oum.np.rad2deg(pick_plan.qs_list[-1][:self.robot.ndof]), 1).tolist()}, '
+                                    f'goal_deg={oum.np.round(oum.np.rad2deg(retract_pick_state[:self.robot.ndof]), 1).tolist()}'
+                                )
+                            self._set_last_plan_failure('screw_pick_retract', 'connect_failed')
+                            return None
                     pick_plan = self._merge_plans(pick_plan, retract_pick_plan)
             pick_plan.events['postpick'] = len(pick_plan.qs_list) - 1
             if prefix_plan is None:
@@ -878,16 +1066,37 @@ class ScrewPlanner(HierarchicalPlannerBase):
                     use_rrt=use_rrt,
                 )
                 if connect_plan is None:
-                    if toggle_dbg:
-                        failure = self._last_plan_failure
-                        if failure is None:
-                            print(f'[screw] sid={sid} pre_screw_connect failed')
-                        else:
-                            print(
-                                f'[screw] sid={sid} pre_screw_connect '
-                                f'{failure["stage"]} failed: {failure["reason"]}'
+                    direct_path = utils.interpolate_qs(
+                        oum.np.asarray(current_state, dtype=oum.np.float32),
+                        oum.np.asarray(via_state, dtype=oum.np.float32),
+                        step_size=oum.pi / 36,
+                    )
+                    direct_valid = utils.path_is_valid(direct_path, self.pln_ctx)
+                    if direct_valid:
+                        connect_plan = self._motion_plan(direct_path)
+                    else:
+                        if toggle_dbg:
+                            start_valid = self.pln_ctx.is_state_valid(
+                                oum.np.asarray(current_state, dtype=oum.np.float32)
                             )
-                    plan = None
+                            via_valid = self.pln_ctx.is_state_valid(
+                                oum.np.asarray(via_state, dtype=oum.np.float32)
+                            )
+                            failure = self._last_plan_failure
+                            if failure is None:
+                                print(
+                                    f'[screw] sid={sid} pre_screw_connect failed '
+                                    f'(start_valid={start_valid}, via_valid={via_valid}, '
+                                    f'direct_valid={direct_valid}, direct_points={len(direct_path)})'
+                                )
+                            else:
+                                print(
+                                    f'[screw] sid={sid} pre_screw_connect '
+                                    f'{failure["stage"]} failed: {failure["reason"]} '
+                                    f'(start_valid={start_valid}, via_valid={via_valid}, '
+                                    f'direct_valid={direct_valid}, direct_points={len(direct_path)})'
+                                )
+                        plan = None
                 else:
                     linear_plan = self._linear_motion_between_poses(
                         start_pos=via_tf[:3, 3],
@@ -940,6 +1149,9 @@ class ScrewPlanner(HierarchicalPlannerBase):
                             use_rrt=False,
                         )
                         if retract_place_plan is None:
+                            self._set_last_plan_failure('screw_retract', 'connect_failed')
+                            if toggle_dbg:
+                                print(f'[screw] sid={sid} retract failed')
                             plan = None
                         else:
                             plan = self._merge_plans(plan, retract_place_plan)

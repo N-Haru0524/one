@@ -277,7 +277,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                     linear_granularity=linear_granularity,
                     ref_qs=self.robot.qs.copy(),
                     timing_prefix='pickplace.reason.pick_approach_start.detail',
-                    toggle_dbg=False,
+                    toggle_dbg=toggle_dbg,
                     debug_label='pickplace_reason pick_approach_start',
                 )
                 self._record_timing('pickplace.reason.pick_approach_start', time.perf_counter() - pick_approach_start_time)
@@ -347,6 +347,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                         timing_prefix='pickplace.reason.pick_goal.detail',
                         diagnose_collision_pairs=toggle_dbg,
                         debug_visualize_contacts=toggle_dbg,
+                        toggle_dbg=toggle_dbg,
                     )
                     if result is None:
                         reason = classify_reason(stats)
@@ -414,6 +415,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                         timing_prefix=f'pickplace.reason.{approach_label}.detail',
                         diagnose_collision_pairs=toggle_dbg,
                         debug_visualize_contacts=toggle_dbg,
+                        toggle_dbg=toggle_dbg,
                     )
                     if pre_result is None:
                         reason = classify_reason(pre_stats)
@@ -444,6 +446,7 @@ class PickPlacePlanner(HierarchicalPlannerBase):
                         timing_prefix=f'pickplace.reason.{goal_label}.detail',
                         diagnose_collision_pairs=toggle_dbg,
                         debug_visualize_contacts=toggle_dbg,
+                        toggle_dbg=toggle_dbg,
                     )
                     place_goal_elapsed += time.perf_counter() - goal_stage_start_time
                     if goal_result is None:

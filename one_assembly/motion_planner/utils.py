@@ -198,10 +198,19 @@ def build_planning_context(collider, aux_mecbas=None, max_edge_step=oum.pi / 180
         lmt_low_list = []
         lmt_high_list = []
         for actor in actors:
+            ndof = getattr(actor, 'ndof', None)
+            if ndof is None:
+                continue
+            chain = getattr(actor, '_chain', None)
+            lmt_lo = None if chain is None else getattr(chain, 'lmt_lo', None)
+            lmt_up = None if chain is None else getattr(chain, 'lmt_up', None)
+            if lmt_lo is not None and lmt_up is not None:
+                lmt_low_list.append(oum.np.asarray(lmt_lo[:ndof], dtype=oum.np.float32))
+                lmt_high_list.append(oum.np.asarray(lmt_up[:ndof], dtype=oum.np.float32))
+                continue
             structure = getattr(actor, 'structure', None)
             compiled = None if structure is None else getattr(structure, 'compiled', None)
-            ndof = getattr(actor, 'ndof', None)
-            if compiled is None or ndof is None:
+            if compiled is None:
                 continue
             lmt_low_list.append(oum.np.asarray(compiled.jlmt_low_by_idx[:ndof], dtype=oum.np.float32))
             lmt_high_list.append(oum.np.asarray(compiled.jlmt_high_by_idx[:ndof], dtype=oum.np.float32))
