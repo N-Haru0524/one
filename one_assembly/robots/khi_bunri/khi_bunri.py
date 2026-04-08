@@ -7,6 +7,7 @@ import one.utils.constant as ouc
 import one.utils.math as oum
 import one.robots.base.mech_base as orbmb
 import one.robots.base.mech_structure as orbms
+import one.robots.base.kine.kinematic_chain as orbkkc
 import one.robots.manipulators.kawasaki.rs007l.rs007l as orkrs
 import one.scene.collision_shape as osc
 import one.scene.render_model as osrm
@@ -91,11 +92,160 @@ def _make_flange_adapter(length=0.105, radius=0.035, rgb=(0.35, 0.35, 0.35)):
 
 
 def _set_arm_joint_limits(arm, lmt_lo, lmt_up):
+    compiled = arm.structure.compiled
+    arm._chain = orbkkc.KinematicChain(arm.structure, compiled.root_lnk, compiled.tip_lnks[0])
+    arm._solver = arm.get_solver(arm._chain)
     lmt_lo = np.asarray(lmt_lo, dtype=np.float32)
     lmt_up = np.asarray(lmt_up, dtype=np.float32)
     arm._chain.lmt_lo = lmt_lo.copy()
     arm._chain.lmt_up = lmt_up.copy()
     arm._solver.joint_limits = (arm._chain.lmt_lo, arm._chain.lmt_up)
+
+
+class KHIBunriRS007L(orkrs.RS007L):
+    def _normalize_active_qs_to_limits(self, qs_active, ref_qs=None, return_debug=False):
+        lmt_lo = np.asarray(self._chain.lmt_lo, dtype=np.float32)
+        lmt_up = np.asarray(self._chain.lmt_up, dtype=np.float32)
+        qs_active = np.asarray(qs_active, dtype=np.float32)
+        if ref_qs is not None:
+            ref_qs = np.asarray(ref_qs, dtype=np.float32)
+        normalized = np.zeros_like(qs_active, dtype=np.float32)
+        period = np.float32(2.0 * np.pi)
+        debug_rows = []
+        for idx, q in enumerate(qs_active):
+            candidates = []
+            for k in range(-4, 5):
+                q_shifted = np.float32(q + k * period)
+                if lmt_lo[idx] <= q_shifted <= lmt_up[idx]:
+                    candidates.append(q_shifted)
+            if return_debug:
+                debug_rows.append({
+                    'joint_idx': idx,
+                    'raw_q': float(q),
+                    'limit_lo': float(lmt_lo[idx]),
+                    'limit_up': float(lmt_up[idx]),
+                    'candidates': [float(candidate) for candidate in candidates],
+                })
+            if not candidates:
+                if return_debug:
+                    return None, {
+                        'failed_joint_idx': idx,
+                        'joint_rows': debug_rows,
+                    }
+                return None
+            if ref_qs is not None:
+                normalized[idx] = min(candidates, key=lambda cand: abs(float(cand - ref_qs[idx])))
+            else:
+                mid = 0.5 * float(lmt_lo[idx] + lmt_up[idx])
+                normalized[idx] = min(candidates, key=lambda cand: abs(float(cand - mid)))
+        if return_debug:
+            return normalized, {
+                'failed_joint_idx': None,
+                'joint_rows': debug_rows,
+            }
+        return normalized
+
+    def _filter_active_joint_limits(self, qs_active_list, ref_qs=None):
+        filtered = []
+        for qs_active in qs_active_list:
+            normalized = self._normalize_active_qs_to_limits(qs_active, ref_qs=ref_qs)
+            if normalized is not None:
+                filtered.append(normalized)
+        return filtered
+
+    def _ik_active(self, tgt_rotmat, tgt_pos, max_solutions=None, ref_qs=None, toggle_dbg=False):
+        tgt_tcp_tf = oum.tf_from_rotmat_pos(tgt_rotmat, tgt_pos)
+        tgt_lastlnk_tf = tgt_tcp_tf @ np.linalg.inv(
+            self._loc_flange_tf @ self._loc_tcp_tf
+        )
+        ref_qs_active = None
+        if ref_qs is not None:
+            ref_qs = np.asarray(ref_qs, dtype=np.float32)
+            ref_qs_active = self._chain.extract_active_qs(ref_qs)
+        ik_results = self._solver.ik(
+            root_rotmat=self.rotmat,
+            root_pos=self.pos,
+            tgt_rotmat=tgt_lastlnk_tf[:3, :3],
+            tgt_pos=tgt_lastlnk_tf[:3, 3],
+            max_solutions=max_solutions,
+            ref_qs=ref_qs_active,
+        )
+        if toggle_dbg:
+            print(
+                '[khi_bunri ik] '
+                f'raw_count={len(ik_results)}, '
+                f'tgt_pos={np.round(tgt_pos, 6).tolist()}, '
+                f'tgt_rot_row0={np.round(tgt_rotmat[0], 6).tolist()}'
+            )
+        if len(ik_results) == 0:
+            return []
+        if not toggle_dbg:
+            return self._filter_active_joint_limits(ik_results, ref_qs=ref_qs_active)
+
+        filtered = []
+        dropped = []
+        for sol_idx, qs_active in enumerate(ik_results):
+            normalized, debug_info = self._normalize_active_qs_to_limits(
+                qs_active,
+                ref_qs=ref_qs_active,
+                return_debug=True,
+            )
+            if normalized is not None:
+                filtered.append(normalized)
+                continue
+            failed_joint_idx = debug_info['failed_joint_idx']
+            joint_row = debug_info['joint_rows'][failed_joint_idx]
+            dropped.append({
+                'sol_idx': sol_idx,
+                'failed_joint_idx': failed_joint_idx,
+                'raw_q': joint_row['raw_q'],
+                'limit_lo': joint_row['limit_lo'],
+                'limit_up': joint_row['limit_up'],
+            })
+        print(
+            '[khi_bunri ik] '
+            f'filtered_count={len(filtered)}, '
+            f'dropped_count={len(dropped)}'
+        )
+        for item in dropped[:8]:
+            print(
+                '[khi_bunri ik] '
+                f'drop sol={item["sol_idx"]}, '
+                f'joint={item["failed_joint_idx"]}, '
+                f'raw_q={item["raw_q"]:.6f}, '
+                f'limit=[{item["limit_lo"]:.6f}, {item["limit_up"]:.6f}]'
+            )
+        return filtered
+
+    def ik_tcp(self, tgt_rotmat, tgt_pos, max_solutions=8, toggle_dbg=False):
+        ik_results = self._ik_active(
+            tgt_rotmat=tgt_rotmat,
+            tgt_pos=tgt_pos,
+            max_solutions=None,
+            toggle_dbg=toggle_dbg,
+        )
+        if not ik_results:
+            return None
+        if max_solutions is not None:
+            ik_results = ik_results[:max_solutions]
+        return [
+            self._chain.embed_active_qs(qs_active, self.qs)
+            for qs_active in ik_results
+        ]
+
+    def ik_tcp_nearest(self, tgt_rotmat, tgt_pos, ref_qs=None, toggle_dbg=False):
+        if ref_qs is None:
+            ref_qs = self.qs
+        ik_results = self._ik_active(
+            tgt_rotmat=tgt_rotmat,
+            tgt_pos=tgt_pos,
+            max_solutions=None,
+            ref_qs=ref_qs,
+            toggle_dbg=toggle_dbg,
+        )
+        if not ik_results:
+            return None
+        return self._chain.embed_active_qs(ik_results[0], self.qs)
 
 
 class KHIBunri:
@@ -106,8 +256,8 @@ class KHIBunri:
         self._pos = oum.ensure_pos(pos)
 
         self.body = KHIBunriBody(rotmat=self._rotmat, pos=self._pos)
-        self.lft_arm = orkrs.RS007L()
-        self.rgt_arm = orkrs.RS007L()
+        self.lft_arm = KHIBunriRS007L()
+        self.rgt_arm = KHIBunriRS007L()
         self.lft_gripper = OR2FG7()
         self.rgt_screwdriver = ORSD()
         self.lft_adapter = _make_flange_adapter()
