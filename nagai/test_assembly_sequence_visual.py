@@ -479,7 +479,7 @@ def plan_screw_action(robot: KHIBunri,
         state,
         pick_pose,
         roll_resolution=screw_resolution,
-        toggle_dbg=True,
+        toggle_dbg=False,
     )
     if not pick_pose_list:
         print(f'no valid screw pickup pose for {target_work.name}')
@@ -500,7 +500,7 @@ def plan_screw_action(robot: KHIBunri,
         pln_jnt=False,
         segment_label=f'screw {target_work.name}',
         end_sync_label=action.label,
-        toggle_dbg=True,
+        toggle_dbg=False,
     )
     if draft is None:
         failure = getattr(planner, '_last_plan_failure', None)
