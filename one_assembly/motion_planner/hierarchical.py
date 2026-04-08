@@ -462,8 +462,12 @@ class HierarchicalPlannerBase(ADPlanner):
             key=lambda item: self._pose_error(current_tf, item[1]),
         )
 
-    def _sorted_ik_solutions(self, tgt_pos, tgt_rotmat, ref_qs):
-        ik_solutions = self.robot.ik_tcp(tgt_rotmat=tgt_rotmat, tgt_pos=tgt_pos)
+    def _sorted_ik_solutions(self, tgt_pos, tgt_rotmat, ref_qs, toggle_dbg=False):
+        ik_solutions = self.robot.ik_tcp(
+            tgt_rotmat=tgt_rotmat,
+            tgt_pos=tgt_pos,
+            toggle_dbg=toggle_dbg,
+        )
         if not ik_solutions:
             return []
         ref_qs = oum.np.asarray(ref_qs, dtype=oum.np.float32)
@@ -617,7 +621,7 @@ class HierarchicalPlannerBase(ADPlanner):
             return 'survived'
         return 'unknown'
 
-    def _debug_visualize_failed_pose_entries(self, label, debug_entries, linear_granularity=0.03, max_entries=8):
+    def _debug_visualize_failed_pose_entries(self, label, debug_entries, linear_granularity=0.03, max_entries=30):
         if not debug_entries:
             return
         base = getattr(builtins, 'base', None)
@@ -720,13 +724,19 @@ class HierarchicalPlannerBase(ADPlanner):
                                 timing_prefix=None,
                                 diagnose_collision_pairs=False,
                                 debug_visualize_contacts=False,
-                                debug_contact_rgb=None):
+                                debug_contact_rgb=None,
+                                toggle_dbg=False):
         plan_pln_ctx = self._filtered_pln_ctx(exclude_entities=exclude_entities) if pln_ctx is None else pln_ctx
         depart_pln_ctx = plan_pln_ctx if depart_pln_ctx is None else depart_pln_ctx
         ref_qs = self.robot.qs if ref_qs is None else ref_qs
         total_start_time = time.perf_counter()
         ik_start_time = time.perf_counter()
-        ik_solutions = self._sorted_ik_solutions(tcp_pos, tcp_rotmat, ref_qs)
+        ik_solutions = self._sorted_ik_solutions(
+            tcp_pos,
+            tcp_rotmat,
+            ref_qs,
+            toggle_dbg=toggle_dbg,
+        )
         ik_elapsed = time.perf_counter() - ik_start_time
         stats = {
             'rejected_no_ik': 0,
@@ -872,6 +882,8 @@ class HierarchicalPlannerBase(ADPlanner):
                           linear_granularity=0.03,
                           ref_qs=None,
                           timing_prefix=None,
+                          preserve_order=False,
+                          update_ref_qs=True,
                           toggle_dbg=False,
                           debug_label='reason'):
         plan_pln_ctx = self._filtered_pln_ctx(exclude_entities=exclude_entities) if pln_ctx is None else pln_ctx
@@ -886,7 +898,15 @@ class HierarchicalPlannerBase(ADPlanner):
         rejected_depart_start_collision = 0
         rejected_depart_path_collision = 0
         rejected_depart_other = 0
-        for key, pose_tf, ee_qs in self._sort_pose_candidates(keyed_pose_list):
+        pose_entries = keyed_pose_list if preserve_order else self._sort_pose_candidates(keyed_pose_list)
+        for key, pose_tf, ee_qs in pose_entries:
+            if toggle_dbg and debug_label == 'screw_reason pick_approach_start':
+                print(
+                    '[screw_reason pick_approach_start eval] '
+                    f'pid={key}, '
+                    f'ref_qs_deg={oum.np.round(oum.np.rad2deg(cur_ref_qs), 1).tolist()}, '
+                    f'pre_pos={oum.np.round(pose_tf[:3, 3], 4).tolist()}'
+                )
             result, stats = self._screen_pose_with_stats(
                 tcp_pos=pose_tf[:3, 3],
                 tcp_rotmat=pose_tf[:3, :3],
@@ -900,6 +920,7 @@ class HierarchicalPlannerBase(ADPlanner):
                 linear_granularity=linear_granularity,
                 ref_qs=cur_ref_qs,
                 timing_prefix=timing_prefix,
+                toggle_dbg=toggle_dbg,
             )
             rejected_no_ik += stats['rejected_no_ik']
             rejected_coarse_collision += stats['rejected_coarse_collision']
@@ -910,9 +931,21 @@ class HierarchicalPlannerBase(ADPlanner):
             rejected_depart_path_collision += stats['rejected_depart_path_collision']
             rejected_depart_other += stats['rejected_depart_other']
             if result is None:
+                if toggle_dbg and debug_label == 'screw_reason pick_approach_start':
+                    print(
+                        '[screw_reason pick_approach_start reject] '
+                        f'pid={key}, reason={self._classify_screen_stats(stats)}'
+                    )
                 continue
             records.append(CandidateRecord(key=key, pose_tf=pose_tf, screen_result=result))
-            cur_ref_qs = result.goal_qs[:self.robot.ndof]
+            if toggle_dbg and debug_label == 'screw_reason pick_approach_start':
+                print(
+                    '[screw_reason pick_approach_start accept] '
+                    f'pid={key}, '
+                    f'goal_qs_deg={oum.np.round(oum.np.rad2deg(result.goal_qs[:self.robot.ndof]), 1).tolist()}'
+                )
+            if update_ref_qs:
+                cur_ref_qs = result.goal_qs[:self.robot.ndof]
         if toggle_dbg:
             print(
                 f'[{debug_label}] '

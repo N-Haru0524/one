@@ -188,13 +188,21 @@ def antipodal_iter(gripper, tgt_sobj,
     pose_tf[:, :, :3, :3] = rot_all
     pose_tf[:, :, :3, 3] = center_sel[:, None, :]
     pose_all = pose_tf.reshape(-1, 4, 4)
+    tcpz_flip = np.eye(3, dtype=np.float32)
+    tcpz_flip[0, 0] = -1.0
+    tcpz_flip[1, 1] = -1.0
+    flipped_pose_all = pose_all.copy()
+    flipped_pose_all[:, :3, :3] = pose_all[:, :3, :3] @ tcpz_flip
+    pose_all = np.concatenate([pose_all, flipped_pose_all], axis=0)
     jaw_all = np.repeat(jaw_sel, len(angles))
+    jaw_all = np.concatenate([jaw_all, jaw_all], axis=0)
     normal_align = (1.0 + np.einsum("ij,ij->i", n_sel, -nq_sel) /
                     (np.linalg.norm(n_sel, axis=1) *
                      np.linalg.norm(nq_sel, axis=1) + oum.eps)) * 0.5
     jaw_close = 1.0 - np.abs(jaw_sel - jaw_mid) / jaw_span
     score = score_weights[0] * normal_align + score_weights[1] * jaw_close
     score_all = np.repeat(score, len(angles))
+    score_all = np.concatenate([score_all, score_all], axis=0)
     order = np.argsort(score_all)[::-1]
     pose_all = pose_all[order]
     jaw_all = jaw_all[order]

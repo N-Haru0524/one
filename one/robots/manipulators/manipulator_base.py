@@ -34,7 +34,8 @@ class ManipulatorBase(orbmb.MechBase):
     def reset_tcp(self):
         self._loc_tcp_tf[:] = np.eye(4, dtype=np.float32)
 
-    def ik_tcp(self, tgt_rotmat, tgt_pos, max_solutions=8):
+    def ik_tcp(self, tgt_rotmat, tgt_pos, max_solutions=8, toggle_dbg=False):
+        del toggle_dbg
         tgt_tcp_tf = oum.tf_from_rotmat_pos(tgt_rotmat, tgt_pos)
         tgt_lastlnk_tf = tgt_tcp_tf @ np.linalg.inv(
             self._loc_flange_tf @ self._loc_tcp_tf
@@ -53,7 +54,8 @@ class ManipulatorBase(orbmb.MechBase):
             return_list.append(self._chain.embed_active_qs(qs_active, self.qs))
         return return_list
 
-    def ik_tcp_nearest(self, tgt_rotmat, tgt_pos, ref_qs=None):
+    def ik_tcp_nearest(self, tgt_rotmat, tgt_pos, ref_qs=None, toggle_dbg=False):
+        del toggle_dbg
         tgt_tcp_tf = oum.tf_from_rotmat_pos(tgt_rotmat, tgt_pos)
         tgt_lastlnk_tf = tgt_tcp_tf @ np.linalg.inv(
             self._loc_flange_tf @ self._loc_tcp_tf
