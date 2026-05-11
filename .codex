@@ -1,0 +1,53 @@
+# one — 動作計画 / 接触判定 / 学習フレームワーク
+
+## 役割 (このリポジトリが担う責務)
+純Python + MuJoCoベースの双腕動作計画フレームワーク。ROS依存なし。
+- **接触判定**: CPU SIMD / GPU compute / MuJoCo native backend (`one/collider/`)
+- **動作計画**: RRT / RRT-Connect / PRM とトラジェクトリ後処理 (`one/motion/`)
+- **把持計画**: Antipodal grasp + force closure 評価 (`one/grasp/`)
+- **物理・描画**: MuJoCo統合 (`one/physics/`), pygletビューア (`one/viewer/`)
+- **ロボットモデル**: Kawasaki RS007L, Denso Cobotta, OnRobot 2FG7/SD (`one/robots/`)
+- **双腕アセンブリ計画**: `one_assembly/` — pick/place/fold/screw の階層プランナ
+
+作業計画(YAML)を入力として、双腕同期トラジェクトリ (`SynchronizedPlan`) を生成し、
+JSON化して下流のROS2ブリッジへ渡すのが主な出口。機械学習実験 (grasp, motion) の
+サンドボックスも兼ねる。
+
+## 実行環境
+- Python 3.12+ / `.venv/` (uvで管理)
+- 依存: numpy, scipy, mujoco, pyglet, matplotlib, pyyaml, pydantic
+- 実行ラッパ: `./codex_python.sh` (必ずこれを使う。bare `python`不可)
+- GUI付き実行: `./dev_gui.sh ./codex_python.sh <script>` (X11 DISPLAY必須)
+- インストール: `./codex_python.sh -m pip install -e .`
+- テスト: リポジトリ直下の `test_*.py` (pytest未使用、standalone)
+
+## 主な入力 / 出力
+### 入力
+- URDF / MJCF (ロボット記述)
+- YAML作業仕様 (`worklists/.../object*.yaml`)
+- STLメッシュ, 事前計算済みgraspピクル / NPZ
+
+### 出力 (ROS2側との契約)
+- `one_assembly.SynchronizedPlan` dataclass
+  - `sync_segments[]` — 双腕のwaypoint列 (`lft_qs`, `lft_ee_qs`, `rgt_qs`, `rgt_ee_qs`)
+  - `event_map` — waypoint index→`["attach", work, grasp_id, jaw, tf]` / `["release", work]`
+  - `sync_points` — 同期バリア
+- 出口は `one_assembly/ros2_bridge.py` で **one_planner_bridgeが期待するJSON形式** に変換
+  (`planned_segments[].state_list[]` + `event_map` のスキーマ)
+- 現時点では ROS2 publisher は未実装 (`one/commu/communicationROS2/` は空)。
+  JSONファイル出力 or 手動publish で `one_planner_bridge/~/plan` (std_msgs/String) に流す。
+
+## 他リポジトリとの接続
+| 相手 | 方向 | 契約 |
+|---|---|---|
+| **one_ros2 / one_planner_bridge** | out | `SynchronizedPlan` → JSON → `~/plan` トピック |
+| **khi_ros2** | 間接 | ロボット関節順序・joint_names は khi_ros2 側の controller YAML と一致必須 |
+| **onrobot_ros2** | 間接 | EE動作(`lft_ee_qs`)の単位・レンジは 2FG7/SDドライバの仕様に一致させる (2FG7 width [m]) |
+
+## 要件 / 守るべき約束
+- `dtype=np.float32`, 4x4同次変換行列
+- 標準エイリアス: `import one.utils.math as oum` 等 (CLAUDE.md参照)
+- 計画失敗は `None` を返す。引数不正は `ValueError`
+- 関節順序・EE値の単位は下流ROS2スタックと必ず突き合わせること
+  (左腕: RS007L 6DOF / 左EE: 2FG7 width_m / 右EE: SD command)
+- ROS2側に渡すJSONは **one_planner_bridge/README** のスキーマを唯一の正とする
