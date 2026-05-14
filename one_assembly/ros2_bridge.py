@@ -12,6 +12,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from one_assembly.assembly_data import (
+    CaptureEvent,
     DualRobotState,
     EEEvent,
     SyncSegment,
@@ -216,6 +217,27 @@ def _event_waypoint_index(event: EEEvent, sample_count: int) -> int:
     return 0
 
 
+def _capture_event_waypoint_index(event: CaptureEvent, sample_count: int) -> int:
+    if event.timing == 'sample' and event.sample_index is not None:
+        return max(0, min(int(event.sample_index), sample_count - 1))
+    if event.timing == 'end':
+        return max(sample_count - 1, 0)
+    return 0
+
+
+def _capture_event_to_dict(event: CaptureEvent) -> dict:
+    payload: dict[str, Any] = {'timing': event.timing}
+    if event.sample_index is not None:
+        payload['sample_index'] = int(event.sample_index)
+    if event.camera is not None:
+        payload['camera'] = event.camera
+    if event.tag is not None:
+        payload['tag'] = event.tag
+    if event.label is not None:
+        payload['label'] = event.label
+    return payload
+
+
 def _state_to_waypoint(state: DualRobotState, time_from_start: Optional[float]) -> dict:
     entry: dict[str, Any] = {
         'lft_qs': _qs_to_list(state.lft_qs),
@@ -255,9 +277,15 @@ def synchronized_plan_to_dict(
             array_form = _ee_event_to_array(event)
             event_map[str(wp_idx)] = array_form if array_form is not None else _ee_event_to_dict(event)
 
+        capture_map: dict[str, list] = {}
+        for event in segment.capture_events:
+            wp_idx = _capture_event_waypoint_index(event, sample_count)
+            capture_map.setdefault(str(wp_idx), []).append(_capture_event_to_dict(event))
+
         planned_segments.append({
             'state_list': state_list,
             'event_map': event_map,
+            'capture_map': capture_map,
             'policy_after': seg_idx in policy_after_indices,
         })
         state = states[-1].copy()

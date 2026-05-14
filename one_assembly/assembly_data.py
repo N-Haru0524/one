@@ -133,6 +133,15 @@ class EEEvent:
 
 
 @dataclass(frozen=True)
+class CaptureEvent:
+    timing: EventTiming  # e.g. 'start', 'end', or 'sample'
+    sample_index: int | None = None  # e.g. 5 when timing == 'sample'
+    camera: str | None = None  # e.g. 'cam0' (interpreted by the bridge / Isaac Sim side)
+    tag: str | None = None  # e.g. 'view_03' used to name the captured image
+    label: str | None = None  # e.g. 'front view of relay'
+
+
+@dataclass(frozen=True)
 class HeldGrasp:
     work_name: str
     gid: int
@@ -162,6 +171,7 @@ class SyncSegment:
     end_sync_id: str  # e.g. 'sp_relay_pre_screw'
     arm_segments: list[ArmSegment] = field(default_factory=list)
     ee_events: list[EEEvent] = field(default_factory=list)
+    capture_events: list[CaptureEvent] = field(default_factory=list)
 
 
 @dataclass
