@@ -6,16 +6,41 @@ import one.viewer.camera as ovc
 import one.viewer.input_manager as ovim
 import one.scene.scene as osc
 
-config = pyglet.gl.Config(
-    major_version=4,
-    minor_version=6,
-    double_buffer=True,
-    depth_size=24,
-    sample_buffers=1,  # multisample
-    samples=4,  # MSAA 4X
-    vsync=False,
-    debug=False
-)
+
+def _config_candidates():
+    # Prefer the original high-quality config first, then progressively relax
+    # requirements so viewer startup still works in containers / software GL.
+    return [
+        pyglet.gl.Config(
+            major_version=4,
+            minor_version=6,
+            double_buffer=True,
+            depth_size=24,
+            sample_buffers=1,
+            samples=4,
+            vsync=False,
+            debug=False,
+        ),
+        pyglet.gl.Config(
+            major_version=3,
+            minor_version=3,
+            double_buffer=True,
+            depth_size=24,
+            sample_buffers=0,
+            samples=0,
+            vsync=False,
+            debug=False,
+        ),
+        pyglet.gl.Config(
+            double_buffer=True,
+            depth_size=24,
+            sample_buffers=0,
+            samples=0,
+            vsync=False,
+            debug=False,
+        ),
+        None,
+    ]
 
 
 class World(pyglet.window.Window):
@@ -28,7 +53,18 @@ class World(pyglet.window.Window):
         screen = display.get_default_screen()
         screen_w, screen_h = screen.width, screen.height
         win_w, win_h = (screen_w * 8 // 10, screen_h * 8 // 10) if win_size is None else win_size
-        super().__init__(win_w, win_h, config=config, resizable=True)
+        last_error = None
+        for config in _config_candidates():
+            try:
+                if config is None:
+                    super().__init__(win_w, win_h, resizable=True)
+                else:
+                    super().__init__(win_w, win_h, config=config, resizable=True)
+                break
+            except pyglet.window.NoSuchConfigException as exc:
+                last_error = exc
+        else:
+            raise last_error if last_error is not None else RuntimeError('Failed to create pyglet window.')
         self.set_location((screen_w - win_w) // 2, (screen_h - win_h) // 2)
         self.set_caption("WRS World")
         self.camera = ovc.Camera(pos=cam_pos, look_at=cam_lookat_pos, aspect=win_w / win_h)

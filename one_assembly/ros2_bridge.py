@@ -264,7 +264,7 @@ def synchronized_plan_to_dict(
 
     return {
         'plan_id': plan_id,
-        'labels': list(plan.labels),
+        'labels': [seg.label for seg in plan.sync_segments],
         'initial_state': _initial_state_dict(plan.initial_state),
         'planned_segments': planned_segments,
     }

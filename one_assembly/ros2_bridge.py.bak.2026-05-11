@@ -1,0 +1,258 @@
+import json
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, is_dataclass
+from typing import Any, Optional
+
+import numpy as np
+
+from one_assembly.assembly_data import (
+    ArmSegment,
+    DualRobotState,
+    EEEvent,
+    SyncSegment,
+    SynchronizedPlan,
+)
+
+
+def synchronized_plan_to_payload(
+    synchronized_plan: SynchronizedPlan,
+    *,
+    plan_id: str,
+) -> dict[str, Any]:
+    if synchronized_plan.initial_state is None:
+        raise ValueError('synchronized_plan.initial_state is required.')
+    if not synchronized_plan.sync_segments:
+        raise ValueError('synchronized_plan.sync_segments must be non-empty.')
+
+    payload: dict[str, Any] = {
+        'plan_id': str(plan_id),
+        'labels': [segment.label for segment in synchronized_plan.sync_segments],
+        'initial_state': _state_to_payload(synchronized_plan.initial_state),
+        'planned_segments': [],
+    }
+
+    current_state = synchronized_plan.initial_state.copy()
+    for idx, segment in enumerate(synchronized_plan.sync_segments):
+        states = _expand_segment_states(current_state, segment)
+        payload['planned_segments'].append(
+            {
+                'label': segment.label or f'segment_{idx}',
+                'state_list': [_state_to_payload(state) for state in states],
+                'events': [_ee_event_to_payload(event) for event in segment.ee_events],
+            }
+        )
+        current_state = states[-1].copy()
+    return payload
+
+
+def payload_to_json(payload: Mapping[str, Any]) -> str:
+    return json.dumps(payload, separators=(',', ':'))
+
+
+class OnePlanPublisher:
+    def __init__(
+        self,
+        *,
+        node_name: str = 'one_plan_publisher',
+        plan_topic: str = '/one_planner_bridge/plan',
+        control_topic: str = '/one_planner_bridge/control',
+        status_topic: str = '/one_planner_bridge/status',
+    ) -> None:
+        try:
+            import rclpy
+            from rclpy.node import Node
+            from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+            from std_msgs.msg import String
+        except ImportError as exc:
+            raise RuntimeError('ROS 2 python packages are required to publish plans.') from exc
+
+        self._rclpy = rclpy
+        self._string_type = String
+        self._owns_rclpy = False
+        if not self._rclpy.ok():
+            self._rclpy.init()
+            self._owns_rclpy = True
+        self._node = Node(node_name)
+        self._last_status: dict[str, Any] = {}
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        self._plan_pub = self._node.create_publisher(String, plan_topic, qos)
+        self._control_pub = self._node.create_publisher(String, control_topic, qos)
+        self._status_sub = self._node.create_subscription(String, status_topic, self._on_status, qos)
+
+    @property
+    def node(self):
+        return self._node
+
+    def close(self) -> None:
+        self._node.destroy_node()
+        if self._owns_rclpy and self._rclpy.ok():
+            self._rclpy.shutdown()
+
+    def publish_payload(self, payload: Mapping[str, Any], *, auto_start: bool = True, settle_sec: float = 0.2) -> None:
+        if settle_sec > 0.0:
+            deadline = time.time() + settle_sec
+            while time.time() < deadline:
+                self._rclpy.spin_once(self._node, timeout_sec=0.05)
+        msg = self._string_type()
+        msg.data = payload_to_json(payload)
+        self._plan_pub.publish(msg)
+        self._rclpy.spin_once(self._node, timeout_sec=0.05)
+        if auto_start:
+            self.send_control('start')
+
+    def publish_synchronized_plan(
+        self,
+        synchronized_plan: SynchronizedPlan,
+        *,
+        plan_id: str,
+        auto_start: bool = True,
+        settle_sec: float = 0.2,
+    ) -> dict[str, Any]:
+        payload = synchronized_plan_to_payload(
+            synchronized_plan,
+            plan_id=plan_id,
+        )
+        self.publish_payload(payload, auto_start=auto_start, settle_sec=settle_sec)
+        return payload
+
+    def send_control(self, command: str) -> None:
+        msg = self._string_type()
+        msg.data = str(command)
+        self._control_pub.publish(msg)
+        self._rclpy.spin_once(self._node, timeout_sec=0.05)
+
+    def wait_for_status(self, target_status: str, timeout_sec: float) -> bool:
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            self._rclpy.spin_once(self._node, timeout_sec=0.05)
+            if self._last_status.get('status') == target_status:
+                return True
+        return False
+
+    def latest_status(self) -> dict[str, Any]:
+        return dict(self._last_status)
+
+    def _on_status(self, msg) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if isinstance(payload, dict):
+            self._last_status = payload
+
+
+def _segment_arm_path(segment: SyncSegment, actor: str) -> list[np.ndarray]:
+    for arm_segment in segment.arm_segments:
+        if arm_segment.actor == actor:
+            return arm_segment.qs_list
+    return []
+
+
+def _expand_segment_states(start_state: DualRobotState, segment: SyncSegment) -> list[DualRobotState]:
+    left_path = _segment_arm_path(segment, 'left_arm')
+    right_path = _segment_arm_path(segment, 'right_arm')
+    sample_count = max(len(left_path), len(right_path), 1)
+    states: list[DualRobotState] = []
+    for idx in range(sample_count):
+        state = start_state.copy() if idx == 0 else states[-1].copy()
+        if left_path:
+            state.lft_qs = np.asarray(left_path[min(idx, len(left_path) - 1)], dtype=np.float32).copy()
+        if right_path:
+            state.rgt_qs = np.asarray(right_path[min(idx, len(right_path) - 1)], dtype=np.float32).copy()
+        states.append(state)
+    for event in segment.ee_events:
+        start_idx = _event_start_index(event, sample_count)
+        for idx in range(start_idx, sample_count):
+            states[idx] = _apply_ee_event_to_state(states[idx], event)
+    return states
+
+
+def _event_start_index(event: EEEvent, sample_count: int) -> int:
+    if event.timing == 'sample' and event.sample_index is not None:
+        return max(0, min(int(event.sample_index), sample_count - 1))
+    if event.timing == 'end':
+        return sample_count - 1
+    return 0
+
+
+def _apply_ee_event_to_state(state: DualRobotState, event: EEEvent) -> DualRobotState:
+    updated = state.copy()
+    if event.actor == 'left_gripper':
+        if event.action in ('open', 'release'):
+            updated.lft_ee_qs[:] = _open_gripper_qs_like(updated.lft_ee_qs)
+        elif event.action in ('close', 'attach') and event.value is not None:
+            width = float(event.value) * 0.5
+            updated.lft_ee_qs[:] = np.array([width, width], dtype=np.float32)
+    elif event.actor == 'right_driver':
+        if event.action in ('extend', 'retract') and event.value is not None:
+            updated.rgt_ee_qs[:] = np.array([float(event.value)], dtype=np.float32)
+    return updated
+
+
+def _state_to_payload(state: DualRobotState) -> dict[str, list[float]]:
+    return {
+        'lft_qs': _numeric_list(state.lft_qs),
+        'lft_ee_qs': _numeric_list(state.lft_ee_qs),
+        'rgt_qs': _numeric_list(state.rgt_qs),
+        'rgt_ee_qs': _numeric_list(state.rgt_ee_qs),
+    }
+
+
+def _ee_event_to_payload(event: EEEvent) -> dict[str, Any]:
+    payload = {
+        'kind': str(event.action),
+        'actor': str(event.actor),
+        'timing': str(event.timing),
+    }
+    if event.sample_index is not None:
+        payload['sample_index'] = int(event.sample_index)
+    if event.value is not None:
+        payload['value'] = float(event.value)
+        if event.actor == 'left_gripper':
+            payload['jaw_width'] = float(event.value)
+    if event.work_name is not None:
+        payload['work_name'] = str(event.work_name)
+    if event.grasp_id is not None:
+        payload['grasp_id'] = int(event.grasp_id)
+    if event.engage_tf is not None:
+        payload['engage_tf'] = _jsonable(event.engage_tf)
+    if event.label is not None:
+        payload['label'] = str(event.label)
+    return payload
+
+
+def _open_gripper_qs_like(qs: np.ndarray) -> np.ndarray:
+    if len(qs) < 2:
+        return np.asarray(qs, dtype=np.float32).copy()
+    half_width = float(np.max(np.asarray(qs, dtype=np.float32)))
+    if half_width <= 0.0:
+        half_width = 0.02
+    return np.array([half_width, half_width], dtype=np.float32)
+
+
+def _numeric_list(values: Any) -> list[float]:
+    if hasattr(values, 'tolist'):
+        values = values.tolist()
+    if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+        return [float(value) for value in values]
+    raise ValueError(f'Expected numeric sequence, got {values!r}')
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, 'tolist'):
+        return _jsonable(value.tolist())
+    if is_dataclass(value):
+        return {key: _jsonable(item) for key, item in asdict(value).items()}
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_jsonable(item) for item in value]
+    return value

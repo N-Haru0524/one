@@ -5,7 +5,7 @@ class RenderTarget:
     def __init__(self, width, height, samples=4):
         self.width = width
         self.height = height
-        self.samples=samples
+        self.samples = samples
         # final
         self.fbo = 0
         self.color_tex = 0
@@ -30,6 +30,17 @@ class RenderTarget:
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
     def _build(self):
+        try:
+            self._build_impl()
+        except Exception:
+            if self.samples > 1:
+                self._delete_gl_objects()
+                self.samples = 0
+                self._build_impl()
+                return
+            raise
+
+    def _build_impl(self):
         # create fbo
         fbo = (gl.GLuint * 1)()
         gl.glGenFramebuffers(1, fbo)
@@ -116,6 +127,26 @@ class RenderTarget:
             )
             assert gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) == gl.GL_FRAMEBUFFER_COMPLETE
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+
+    def _delete_gl_objects(self):
+        if self.color_tex:
+            gl.glDeleteTextures(1, (gl.GLuint * 1)(self.color_tex))
+            self.color_tex = 0
+        if self.depth_rb:
+            gl.glDeleteRenderbuffers(1, (gl.GLuint * 1)(self.depth_rb))
+            self.depth_rb = 0
+        if self.fbo:
+            gl.glDeleteFramebuffers(1, (gl.GLuint * 1)(self.fbo))
+            self.fbo = 0
+        if self.msaa_color_rb:
+            gl.glDeleteRenderbuffers(1, (gl.GLuint * 1)(self.msaa_color_rb))
+            self.msaa_color_rb = 0
+        if self.msaa_depth_rb:
+            gl.glDeleteRenderbuffers(1, (gl.GLuint * 1)(self.msaa_depth_rb))
+            self.msaa_depth_rb = 0
+        if self.msaa_fbo:
+            gl.glDeleteFramebuffers(1, (gl.GLuint * 1)(self.msaa_fbo))
+            self.msaa_fbo = 0
 
     def _resolve_msaa(self):
         gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self.msaa_fbo)
