@@ -69,9 +69,12 @@ class OR2FG7(oreb.EndEffectorBase, oreb.GripperMixin):
         self.set_jaw_width(0.017)
 
     def set_jaw_width(self, jaw_width):
-        if jaw_width < self.jaw_range[0] or jaw_width > self.jaw_range[1]:
+        jaw_width = float(jaw_width)
+        tol = 1e-6
+        if jaw_width < float(self.jaw_range[0]) - tol or jaw_width > float(self.jaw_range[1]) + tol:
             raise ValueError(f"jaw_width {jaw_width} out of range {self.jaw_range}")
-        self.fk(qs=[jaw_width * 0.5, jaw_width * 0.5])
+        clamped = min(max(jaw_width, float(self.jaw_range[0])), float(self.jaw_range[1]))
+        self.fk(qs=[clamped * 0.5, clamped * 0.5])
 
     def clone(self):
         new = super().clone()
