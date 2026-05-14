@@ -9,8 +9,8 @@ gripper = or_2fg7.OR2FG7()
 #
 gripper.toggle_render_collision = True
 gripper.attach_to(base.scene)
-# tcpframe = ossop.frame(pos=gripper.fk()[-1][:3, 3], rotmat=gripper.fk()[-1][:3, :3])
-# tcpframe.attach_to(base.scene)
+tcpframe = ossop.frame(pos=gripper.fk()[-1][:3, 3], rotmat=gripper.fk()[-1][:3, :3])
+tcpframe.attach_to(base.scene)
 # base.run()
 y = -.045
 box = ossop.cylinder(spos=(.0, y, 0.15), epos=(.0, y, 0.25), radius=.03,

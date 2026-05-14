@@ -1,11 +1,15 @@
+# VGA USB cameras have identical USB descriptors so /dev/v4l/by-id/ collapses
+# them into a single symlink. Use /dev/v4l/by-path/ which is keyed by physical
+# USB port instead. Paths are stable as long as the cameras stay in the same
+# port; if you move a camera to a different port, update the device entry below.
 cameras:
   cam0:
-    device: /dev/v4l/by-id/usb-HD_Camera_Manufacturer_VGA_USB_Camera_VGA_USB_Camera-video-index0
+    device: /dev/v4l/by-path/pci-0000:80:14.0-usb-0:7.1:1.0-video-index0
     width: 640
     height: 480
     fps: 30
   cam1:
-    device: /dev/v4l/by-id/REPLACE_WITH_SECOND_VGA_BY_ID
+    device: /dev/v4l/by-path/pci-0000:80:14.0-usb-0:10.3:1.0-video-index0
     width: 640
     height: 480
     fps: 30
