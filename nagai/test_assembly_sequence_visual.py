@@ -23,6 +23,7 @@ from one_assembly.assembly_data import (
     SyncSegment,
     SynchronizedPlan,
 )
+from one_assembly.ros2_bridge import BridgeClient, synchronized_plan_to_dict
 from one_assembly.assembly_planning import (
     AssemblyNode,
     assembly_sequence_planning,
@@ -73,6 +74,12 @@ def parse_args():
         default=12,
         help='Number of roll candidates around the screw axis for screw planning.',
     )
+    parser.add_argument('--publish-bridge', action='store_true')
+    parser.add_argument('--bridge-plan-id', default='')
+    parser.add_argument('--bridge-wait-status', default='')
+    parser.add_argument('--bridge-timeout', type=float, default=10.0)
+    parser.add_argument('--bridge-no-auto-start', action='store_true')
+    parser.add_argument('--no-view', action='store_true')
     parser.add_argument('--list-only', action='store_true')
     return parser.parse_args()
 
@@ -706,6 +713,22 @@ def manual_leaf(worklist: WorkList, sequence: str, layout_name: str) -> Assembly
     )
 
 
+def publish_plan_to_bridge(playback: SynchronizedPlan, plan_id: str, wait_status: str, timeout: float, auto_start: bool):
+    import time as _time
+    import rclpy as _rclpy
+
+    plan_dict = synchronized_plan_to_dict(playback, plan_id=plan_id)
+    with BridgeClient(node_name='assembly_dispatcher') as client:
+        deadline = _time.time() + 1.0
+        while _time.time() < deadline:
+            _rclpy.spin_once(client._node, timeout_sec=0.05)
+        client.send_plan(plan_dict)
+        print(f'[bridge] published plan_id={plan_id} segments={len(plan_dict["planned_segments"])}')
+        if wait_status:
+            ok = client.wait_for_status(wait_status, timeout=timeout)
+            print(f'[bridge] wait_status={wait_status} ok={ok} latest={client.latest_status}')
+
+
 def main():
     args = parse_args()
 
@@ -726,20 +749,25 @@ def main():
     if args.list_only:
         return
 
-    base = ovw.World(
-        cam_pos=(3.1, 1.9, 2.0),
-        cam_lookat_pos=(0.18, 0.0, 0.55),
-        toggle_auto_cam_orbit=False,
-    )
-    builtins.base = base
-    ossop.frame(length_scale=0.25, radius_scale=1.2).attach_to(base.scene)
+    if args.no_view:
+        base = None
+    else:
+        base = ovw.World(
+            cam_pos=(3.1, 1.9, 2.0),
+            cam_lookat_pos=(0.18, 0.0, 0.55),
+            toggle_auto_cam_orbit=False,
+        )
+        builtins.base = base
+        ossop.frame(length_scale=0.25, radius_scale=1.2).attach_to(base.scene)
 
     worklist = WorkList(pos=oum.vec(0.2 + 0.09 + 0.035, 0, 0.11 + 0.018 + 0.0902), collision_type=ouc.CollisionType.MESH)
     worklist.init_pose(seed=args.layout)
-    worklist.attach_to(base.scene)
+    if base is not None:
+        worklist.attach_to(base.scene)
 
     robot = KHIBunri()
-    robot.attach_to(base.scene)
+    if base is not None:
+        robot.attach_to(base.scene)
     # robot.body.alpha = 0.22
     # robot.lft_arm.alpha = 0.22
     # robot.rgt_arm.alpha = 0.22
@@ -749,20 +777,23 @@ def main():
     # robot.rgt_adapter.alpha = 0.22
     _ROBOT_REF['value'] = robot
 
-    lft_tcp_frame = ossop.frame(
-        pos=robot.lft_tcp_tf[:3, 3],
-        rotmat=robot.lft_tcp_tf[:3, :3],
-        length_scale=0.18,
-        radius_scale=0.8,
-    )
-    lft_tcp_frame.attach_to(base.scene)
-    rgt_tcp_frame = ossop.frame(
-        pos=robot.rgt_tcp_tf[:3, 3],
-        rotmat=robot.rgt_tcp_tf[:3, :3],
-        length_scale=0.18,
-        radius_scale=0.8,
-    )
-    rgt_tcp_frame.attach_to(base.scene)
+    lft_tcp_frame = None
+    rgt_tcp_frame = None
+    if base is not None:
+        lft_tcp_frame = ossop.frame(
+            pos=robot.lft_tcp_tf[:3, 3],
+            rotmat=robot.lft_tcp_tf[:3, :3],
+            length_scale=0.18,
+            radius_scale=0.8,
+        )
+        lft_tcp_frame.attach_to(base.scene)
+        rgt_tcp_frame = ossop.frame(
+            pos=robot.rgt_tcp_tf[:3, 3],
+            rotmat=robot.rgt_tcp_tf[:3, :3],
+            length_scale=0.18,
+            radius_scale=0.8,
+        )
+        rgt_tcp_frame.attach_to(base.scene)
 
     if args.sequence is not None:
         candidates = leaves
@@ -792,6 +823,17 @@ def main():
 
     print(f'selected leaf: {playback.labels}')
     print_plan_joint_report(playback)
+    if args.publish_bridge:
+        bridge_plan_id = args.bridge_plan_id or f'assembly-{"_".join(playback.labels)}'
+        publish_plan_to_bridge(
+            playback,
+            plan_id=bridge_plan_id,
+            wait_status=args.bridge_wait_status,
+            timeout=args.bridge_timeout,
+            auto_start=not args.bridge_no_auto_start,
+        )
+        if args.no_view:
+            return
     held = {'name': None}
     counter = {'segment_idx': 0, 'sample_idx': 0}
     root_work_state = reset_work_state(worklist, layout_name=args.layout)
@@ -866,6 +908,8 @@ def main():
         counter['sample_idx'] = 0
 
     def update_tcp_frames():
+        if lft_tcp_frame is None or rgt_tcp_frame is None:
+            return
         lft_tcp_frame.set_rotmat_pos(rotmat=robot.lft_tcp_tf[:3, :3], pos=robot.lft_tcp_tf[:3, 3])
         rgt_tcp_frame.set_rotmat_pos(rotmat=robot.rgt_tcp_tf[:3, :3], pos=robot.rgt_tcp_tf[:3, 3])
 
