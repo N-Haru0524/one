@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any
 from one_assembly.assembly_data import (
     ArmActor,
     ArmSegment,
+    CaptureEvent,
     DualRobotState,
     EEAction,
     EEActor,
@@ -23,6 +24,7 @@ __all__ = [
     'ArmActor',
     'PlannerActionDraft',
     'ArmSegment',
+    'CaptureEvent',
     'DualRobotState',
     'EEAction',
     'EEActor',
