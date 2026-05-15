@@ -1,6 +1,0 @@
-numpy
-scipy
-pyglet
-mujoco
-matplotlib
-pyyaml>=6.0.3
