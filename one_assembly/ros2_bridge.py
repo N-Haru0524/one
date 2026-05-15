@@ -7,9 +7,20 @@ import time
 from typing import Any, Iterable, Optional
 
 import numpy as np
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import String
+
+try:
+    import rclpy
+    from rclpy.node import Node
+    from std_msgs.msg import String
+    _HAS_RCLPY = True
+except ImportError:
+    # Module can still be imported without ROS sourced. BridgeClient /
+    # OnePlanPublisher will raise on use; synchronized_plan_to_dict and the
+    # pure helpers below remain usable for offline plan serialization / tests.
+    rclpy = None  # type: ignore
+    Node = object  # type: ignore
+    String = object  # type: ignore
+    _HAS_RCLPY = False
 
 from one_assembly.assembly_data import (
     CaptureEvent,
@@ -18,6 +29,14 @@ from one_assembly.assembly_data import (
     SyncSegment,
     SynchronizedPlan,
 )
+
+
+def _require_rclpy():
+    if not _HAS_RCLPY:
+        raise RuntimeError(
+            "rclpy is not available. Source ROS2 (e.g. `source install/setup.bash`) "
+            "before using BridgeClient / OnePlanPublisher."
+        )
 
 
 _DEFAULT_PLAN_TOPIC = '/one_planner_bridge/plan'
@@ -45,6 +64,7 @@ class BridgeClient:
         self.latest_status: Optional[dict] = None
 
     def __enter__(self) -> 'BridgeClient':
+        _require_rclpy()
         if not rclpy.ok():
             rclpy.init()
             self._owns_rclpy = True
