@@ -14,9 +14,9 @@ try:
     from std_msgs.msg import String
     _HAS_RCLPY = True
 except ImportError:
-    # Module can still be imported without ROS sourced. BridgeClient /
-    # OnePlanPublisher will raise on use; synchronized_plan_to_dict and the
-    # pure helpers below remain usable for offline plan serialization / tests.
+    # Module can still be imported without ROS sourced. BridgeClient will
+    # raise on use; synchronized_plan_to_dict and the pure helpers below
+    # remain usable for offline plan serialization / tests.
     rclpy = None  # type: ignore
     Node = object  # type: ignore
     String = object  # type: ignore
@@ -35,7 +35,7 @@ def _require_rclpy():
     if not _HAS_RCLPY:
         raise RuntimeError(
             "rclpy is not available. Source ROS2 (e.g. `source install/setup.bash`) "
-            "before using BridgeClient / OnePlanPublisher."
+            "before using BridgeClient."
         )
 
 
