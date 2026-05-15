@@ -24,7 +24,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import yaml
 
 import one.utils.constant as ouc
 import one.scene.scene_object_primitive as ossop
@@ -47,21 +46,12 @@ from one_assembly.ScrewOperation.correction_loop import (
 )
 from one_assembly.ScrewOperation.dataset import load_and_preprocess_pair
 from one_assembly.ScrewOperation.model_builder import build_vit
+from one_assembly.ScrewOperation.prescrew import resolve_prescrew
 from one_assembly.ScrewOperation.spiral_metry import hex_ring_abs
 from one_assembly.ScrewOperation.utils import make_mode_dir
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-
-def _load_prescrew_qs(path: str) -> tuple[np.ndarray, np.ndarray | None]:
-    """Returns (rgt_qs, rgt_ee_qs). rgt_ee_qs may be None."""
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    qs = np.asarray(data["rgt_qs"], dtype=np.float32)
-    ee = data.get("rgt_ee_qs")
-    ee_arr = np.asarray(ee, dtype=np.float32) if ee is not None else None
-    return qs, ee_arr
 
 
 def _build_inference_label_source(config, model, device, spiral_list) -> LabelSource:
@@ -127,7 +117,8 @@ def main():
     robot.attach_to(scene)
 
     rgt_arm = robot.rgt_arm
-    prescrew_rgt_qs, prescrew_ee_qs = _load_prescrew_qs(args.prescrew)
+    _sol = resolve_prescrew(yaml_path=args.prescrew)
+    prescrew_rgt_qs, prescrew_ee_qs = _sol.rgt_qs, _sol.rgt_ee_qs
 
     # ---- Bridge
     cameras_yaml = args.cameras_yaml or os.path.join(BASE_DIR, "config", "cameras.yaml")
