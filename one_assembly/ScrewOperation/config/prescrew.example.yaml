@@ -1,0 +1,24 @@
+# Prescrew pose for screw_correction_run.py / data_collector.py.
+#
+# Schema:
+#   rgt_qs:    [j1..j6]           required, radians, in this exact order
+#                                 left_joint1..left_joint6 / right_joint1..right_joint6
+#                                 (matches one_planner_bridge params.yaml)
+#   rgt_ee_qs: [shank_pos_m]      optional, meters, range [-0.033164, 0.0]
+#                                 (one_planner_bridge SD min/max). The bridge
+#                                 publishes this via /onrobot_sd/move_shank
+#                                 when it processes the EEEvent kind='extend'
+#                                 emitted at the end of the approach segment.
+#
+# Producing the values:
+#   - From a manual jog: drive the right arm to the desired pose with the
+#     screwdriver shank extended to its prescrew length, then read joint
+#     positions from /right/joint_states (right_joint1..right_joint6 order).
+#   - From a planner: capture the goal qs of the last approach waypoint
+#     produced by ScrewPlanner.gen_screw(...) before the policy phase
+#     would normally start.
+#
+# The numbers below are placeholders — replace them before running.
+
+rgt_qs: [0.0, 0.5, -1.2, 0.0, 0.7, 0.0]
+rgt_ee_qs: [-0.020]
