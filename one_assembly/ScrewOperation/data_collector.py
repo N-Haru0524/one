@@ -66,8 +66,21 @@ def _build_spiral_label_source(num_classes: int, spiral_list) -> tuple[LabelSour
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=str, default=None)
-    ap.add_argument("--prescrew", required=True,
-                    help="YAML with rgt_qs (and optional rgt_ee_qs) of the prescrew pose")
+    prescrew_group = ap.add_mutually_exclusive_group(required=True)
+    prescrew_group.add_argument("--prescrew",
+                                help="YAML with rgt_qs (and optional rgt_ee_qs) of the prescrew pose")
+    prescrew_group.add_argument("--session",
+                                help="ScrewSession string (e.g. 'rly_scrw_pick' or "
+                                     "'rly_scrw_place:wrkbnch-brckt-cpctr-rly')")
+    ap.add_argument("--worklist_root", default=None,
+                    help="WorkList asset root (defaults to one_assembly/worklists/electric_assembly)")
+    ap.add_argument("--layout", default="home",
+                    help="WorkList layout name (default: home)")
+    ap.add_argument("--prescrew_offset", type=float, default=0.005,
+                    help="TCP offset along screw axis [m] (default 5 mm)")
+    ap.add_argument("--rgt_ee", type=float, default=None,
+                    help="Optional SD shank position [m] at the prescrew waypoint")
+    ap.add_argument("--flip_axis", action="store_true")
     ap.add_argument("--cameras_yaml", default=None)
     ap.add_argument("--episode_dir", default=None)
     ap.add_argument("--num_classes", type=int, default=None)
@@ -75,7 +88,8 @@ def main():
     ap.add_argument("--latency", type=float, default=None)
     ap.add_argument("--spiral_step", type=float, default=None)
     ap.add_argument("--description", type=str, default=None)
-    ap.add_argument("--sequence", type=str, default=None)
+    ap.add_argument("--sequence", type=str, default=None,
+                    help="ScrewConfig.sequence label used to build the output dir path")
     ap.add_argument("--mode", type=str, default=None)
     ap.add_argument("--skip_plan", action="store_true")
     args = ap.parse_args()
@@ -87,7 +101,10 @@ def main():
     config = merge_cli_args(config, args)
 
     if args.episode_dir is None:
-        ep_dir = make_mode_dir(BASE_DIR, "train", sequence=config.sequence, mode=config.mode)
+        # Layout: datasets/train/{NNN}/. config.sequence / config.mode are
+        # recorded only inside config.yaml — they no longer affect the path
+        # (kept consistent with gen_pose_csv.py).
+        ep_dir = make_mode_dir(BASE_DIR, "train")
     else:
         ep_dir = args.episode_dir
         os.makedirs(os.path.join(ep_dir, "images"), exist_ok=True)
@@ -106,8 +123,33 @@ def main():
     robot.attach_to(scene)
     rgt_arm = robot.rgt_arm
 
-    _sol = resolve_prescrew(yaml_path=args.prescrew)
-    prescrew_rgt_qs, prescrew_ee_qs = _sol.rgt_qs, _sol.rgt_ee_qs
+    if args.session is not None:
+        from one_assembly.worklist import WorkList
+        from one_assembly.ScrewOperation.session import (
+            parse_screw_session_string, prescrew_qs_for_session,
+        )
+        wl_kwargs = {}
+        if args.worklist_root is not None:
+            wl_kwargs['yaml_path'] = os.path.join(args.worklist_root, 'yamls')
+            wl_kwargs['mesh_path'] = os.path.join(args.worklist_root, 'meshes')
+            wl_kwargs['grasp_path'] = os.path.join(args.worklist_root, 'grasps')
+        worklist = WorkList(**wl_kwargs)
+        worklist.init_pose(args.layout)
+        spec = parse_screw_session_string(worklist, args.session, layout_name=args.layout)
+        _sol = prescrew_qs_for_session(
+            rgt_arm, worklist, spec,
+            prescrew_offset=args.prescrew_offset,
+            flip_axis=args.flip_axis,
+        )
+        prescrew_rgt_qs = _sol.rgt_qs
+        prescrew_ee_qs = (
+            np.asarray([args.rgt_ee], dtype=np.float32) if args.rgt_ee is not None else None
+        )
+        print(f"session: target={spec.target_token!r} phase={spec.phase!r} "
+              f"history={spec.history_string!r}")
+    else:
+        _sol = resolve_prescrew(yaml_path=args.prescrew)
+        prescrew_rgt_qs, prescrew_ee_qs = _sol.rgt_qs, _sol.rgt_ee_qs
 
     cameras_yaml = args.cameras_yaml or os.path.join(BASE_DIR, "config", "cameras.yaml")
 

@@ -147,9 +147,33 @@ class CorrectionBridgeClient:
         if self._node is not None and rclpy.ok():
             rclpy.spin_once(self._node, timeout_sec=timeout_sec)
 
-    def send_plan(self, plan_dict: dict) -> None:
+    def wait_for_plan_subscriber(self, timeout: float = 5.0, poll: float = 0.1) -> bool:
+        """Block until /one_planner_bridge/plan has at least one subscriber.
+
+        With short-lived publishers (script that publishes once and exits),
+        the bridge can silently drop the message if discovery hasn't matched
+        publisher↔subscriber yet. Call this before send_plan to avoid that.
+        """
         if self._plan_pub is None:
             raise RuntimeError("CorrectionBridgeClient must be used as a context manager.")
+        import time
+        deadline = time.monotonic() + float(timeout)
+        while time.monotonic() < deadline:
+            if self._plan_pub.get_subscription_count() > 0:
+                return True
+            self.pump(poll)
+        return self._plan_pub.get_subscription_count() > 0
+
+    def send_plan(self, plan_dict: dict, *, wait_subscriber_timeout: float = 5.0) -> None:
+        """Publish a plan dict to /one_planner_bridge/plan.
+
+        Waits up to ``wait_subscriber_timeout`` seconds for the bridge to be
+        discovered as a subscriber; pass 0.0 to skip the wait.
+        """
+        if self._plan_pub is None:
+            raise RuntimeError("CorrectionBridgeClient must be used as a context manager.")
+        if wait_subscriber_timeout > 0.0:
+            self.wait_for_plan_subscriber(timeout=wait_subscriber_timeout)
         msg = String()
         msg.data = json.dumps(plan_dict, ensure_ascii=False)
         self._plan_pub.publish(msg)
