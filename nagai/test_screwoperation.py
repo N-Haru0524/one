@@ -205,6 +205,107 @@ class ConfigTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# swap_cam12 utility
+# ---------------------------------------------------------------------------
+
+class SwapCam12Test(unittest.TestCase):
+    def _build_dataset(self, root, n=3):
+        import cv2
+        images = os.path.join(root, "images")
+        os.makedirs(images, exist_ok=True)
+        for k in range(n):
+            cam1 = np.full((4, 6, 3), fill_value=10 + k, dtype=np.uint8)  # distinct pixel value per cam1
+            cam2 = np.full((4, 6, 3), fill_value=200 + k, dtype=np.uint8)  # distinct value per cam2
+            cv2.imwrite(os.path.join(images, f"{k:06d}_cam1.png"), cam1)
+            cv2.imwrite(os.path.join(images, f"{k:06d}_cam2.png"), cam2)
+        from one_assembly.ScrewOperation.config import ScrewConfig, save_config
+        save_config(
+            ScrewConfig(
+                roi1=(10, 20, 30, 40),
+                roi2=(50, 60, 70, 80),
+                rotate1=90,
+                rotate2=270,
+            ),
+            os.path.join(root, "config.yaml"),
+        )
+        return n
+
+    def _read_first_pixel(self, path):
+        import cv2
+        img = cv2.imread(path)
+        # cv2 returns BGR; with our synthetic data, R=G=B=value, so any channel works
+        return int(img[0, 0, 0])
+
+    def test_swap_renames_files_and_updates_config(self):
+        from one_assembly.ScrewOperation.config import load_config
+        from one_assembly.ScrewOperation.swap_cam12 import swap_dataset
+        with tempfile.TemporaryDirectory() as tmp:
+            ep = os.path.join(tmp, "ep")
+            self._build_dataset(ep)
+            # Sanity: before swap, cam1 frame 0 has value 10, cam2 has 200
+            self.assertEqual(self._read_first_pixel(os.path.join(ep, "images", "000000_cam1.png")), 10)
+            self.assertEqual(self._read_first_pixel(os.path.join(ep, "images", "000000_cam2.png")), 200)
+            summary = swap_dataset(ep)
+            self.assertEqual(summary["image_pairs_swapped"], 3)
+            self.assertTrue(summary["config_swapped"])
+            # After swap: cam1 should now hold what was cam2 (value 200), and vice versa
+            self.assertEqual(self._read_first_pixel(os.path.join(ep, "images", "000000_cam1.png")), 200)
+            self.assertEqual(self._read_first_pixel(os.path.join(ep, "images", "000000_cam2.png")), 10)
+            cfg = load_config(os.path.join(ep, "config.yaml"))
+            self.assertEqual(cfg.roi1, (50, 60, 70, 80))
+            self.assertEqual(cfg.roi2, (10, 20, 30, 40))
+            self.assertEqual(cfg.rotate1, 270)
+            self.assertEqual(cfg.rotate2, 90)
+
+    def test_swap_is_idempotent(self):
+        from one_assembly.ScrewOperation.config import load_config
+        from one_assembly.ScrewOperation.swap_cam12 import swap_dataset
+        with tempfile.TemporaryDirectory() as tmp:
+            ep = os.path.join(tmp, "ep")
+            self._build_dataset(ep, n=2)
+            before_cfg = load_config(os.path.join(ep, "config.yaml"))
+            swap_dataset(ep)
+            swap_dataset(ep)  # twice → original
+            after_cfg = load_config(os.path.join(ep, "config.yaml"))
+            self.assertEqual(before_cfg.roi1, after_cfg.roi1)
+            self.assertEqual(before_cfg.roi2, after_cfg.roi2)
+            self.assertEqual(before_cfg.rotate1, after_cfg.rotate1)
+            self.assertEqual(before_cfg.rotate2, after_cfg.rotate2)
+            # File pixel values back to original
+            self.assertEqual(self._read_first_pixel(os.path.join(ep, "images", "000000_cam1.png")), 10)
+            self.assertEqual(self._read_first_pixel(os.path.join(ep, "images", "000000_cam2.png")), 200)
+
+    def test_swap_dry_run_does_not_modify(self):
+        from one_assembly.ScrewOperation.config import load_config
+        from one_assembly.ScrewOperation.swap_cam12 import swap_dataset
+        with tempfile.TemporaryDirectory() as tmp:
+            ep = os.path.join(tmp, "ep")
+            self._build_dataset(ep, n=2)
+            summary = swap_dataset(ep, dry_run=True)
+            self.assertTrue(summary["dry_run"])
+            self.assertEqual(summary["image_pairs_swapped"], 2)
+            # nothing changed on disk
+            self.assertEqual(self._read_first_pixel(os.path.join(ep, "images", "000000_cam1.png")), 10)
+            cfg = load_config(os.path.join(ep, "config.yaml"))
+            self.assertEqual(cfg.roi1, (10, 20, 30, 40))
+
+    def test_swap_handles_missing_config(self):
+        from one_assembly.ScrewOperation.swap_cam12 import swap_dataset
+        with tempfile.TemporaryDirectory() as tmp:
+            ep = os.path.join(tmp, "ep")
+            os.makedirs(os.path.join(ep, "images"))
+            import cv2
+            for k in range(2):
+                cv2.imwrite(os.path.join(ep, "images", f"{k:06d}_cam1.png"),
+                             np.full((2, 2, 3), 1, dtype=np.uint8))
+                cv2.imwrite(os.path.join(ep, "images", f"{k:06d}_cam2.png"),
+                             np.full((2, 2, 3), 2, dtype=np.uint8))
+            summary = swap_dataset(ep)
+            self.assertEqual(summary["image_pairs_swapped"], 2)
+            self.assertFalse(summary["config_swapped"])  # no config.yaml → no swap
+
+
+# ---------------------------------------------------------------------------
 # preprocess (rotate + ROI helpers)
 # ---------------------------------------------------------------------------
 
