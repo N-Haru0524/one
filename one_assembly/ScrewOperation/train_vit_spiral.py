@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from one_assembly.ScrewOperation.config import ScrewConfig, load_config, save_config, merge_cli_args
-from one_assembly.ScrewOperation.model_builder import build_vit
+from one_assembly.ScrewOperation.model_builder import build_model
 from one_assembly.ScrewOperation.dataset import SpiralDataset
 from one_assembly.ScrewOperation.utils import make_mode_dir
 
@@ -66,7 +66,7 @@ def train(out_path: str, config: ScrewConfig, train_csv, train_image_dir, val_cs
         pin_memory=True,
     )
 
-    model = build_vit(config).to(device)
+    model = build_model(config).to(device)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)

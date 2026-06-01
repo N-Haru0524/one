@@ -57,6 +57,11 @@ class ScrewConfig(BaseModel):
             )
         return int(v)
 
+    # Encoder selection: "vit_efficient" (Linformer-based ViT, default),
+    # "dinov3" (frozen/finetuned DINOv3 backbone + linear head), or
+    # "dinov3_twin" (per-cam DINOv3 + cross-attention fusion).
+    encoder: str = "vit_efficient"
+
     num_classes: int = 91
     patch_size: int = 5
     dim: int = 128
@@ -64,6 +69,21 @@ class ScrewConfig(BaseModel):
     heads: int = 8
     k: int = 64
     channels: int = 3
+
+    # DINOv3 encoder hyperparameters (used only when encoder == "dinov3").
+    dinov3_model_id: str = "facebook/dinov3-vits16-pretrain-lvd1689m"
+    dinov3_resolution: int = 224
+    dinov3_freeze: bool = True
+    dinov3_head_hidden: int = 0
+    dinov3_dropout: float = 0.1
+    dinov3_use_layernorm: bool = True
+    dinov3_num_register_tokens: int = 4
+
+    # DINOv3 twin encoder (encoder == "dinov3_twin"): shared backbone runs
+    # over each cam crop separately, then bidirectional cross-attention
+    # fusion blocks mix the two token streams.
+    dinov3_twin_fusion_depth: int = 1
+    dinov3_twin_fusion_heads: int = 8
 
     resize_per_cam: tuple[int, int] = (45, 40)
 

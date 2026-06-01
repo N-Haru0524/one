@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from one_assembly.ScrewOperation.utils import rot6d_to_rotmat
 from one_assembly.ScrewOperation.spiral_metry import hex_ring_abs
 from one_assembly.ScrewOperation.config import ScrewConfig, load_config, merge_cli_args
-from one_assembly.ScrewOperation.model_builder import build_vit
+from one_assembly.ScrewOperation.model_builder import build_model
 from one_assembly.ScrewOperation.dataset import load_and_preprocess_pair
 
 toggle_label = False
@@ -42,7 +42,7 @@ def main(args, config: ScrewConfig):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("device:", device)
 
-    model = build_vit(config).to(device)
+    model = build_model(config).to(device)
     sd = torch.load(args.model, map_location=device)
     model.load_state_dict(sd)
     model.eval()
