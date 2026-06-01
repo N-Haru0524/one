@@ -146,7 +146,9 @@ if __name__ == "__main__":
     val_dir = args.val_dir or config.train_dirs[0]
     val_csv, val_image_dir = resolve_val_paths(val_dir)
 
-    model_dir = make_mode_dir(BASE_DIR, "model", sequence=config.sequence, mode=config.mode)
+    # Flat layout: datasets/model/{NNN}/. sequence / mode live in config.yaml
+    # only (consistent with gen_pose_csv.py / data_collector.py).
+    model_dir = make_mode_dir(BASE_DIR, "model")
     out_path = os.path.join(model_dir, "model.pt")
     save_config(config, os.path.join(model_dir, "config.yaml"))
     print("model dir:", model_dir)
