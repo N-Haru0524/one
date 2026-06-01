@@ -32,6 +32,10 @@ class LayoutSpec:
     screw_rotmat: np.ndarray
     screw_pitch: np.ndarray
     part_entries: Tuple[LayoutEntry, ...]
+    # Per-screw incremental rotation around the screw's local Z axis (insertion
+    # axis). screw N is rotated by (N * screw_rotation_step_deg) degrees from
+    # the base screw_rotmat. Use for visual diversity across racked screws.
+    screw_rotation_step_deg: float = 0.0
 
 
 def _default_root_dir() -> str:
@@ -174,6 +178,7 @@ class WorkList:
                                         field_name=f'{layout_name}.screw.rotmat'),
                 screw_pitch=_as_vec3(screw_data.get('pitch', [0.0, 0.0, 0.0]),
                                      field_name=f'{layout_name}.screw.pitch'),
+                screw_rotation_step_deg=float(screw_data.get('rotation_step_deg', 0.0)),
                 part_entries=tuple(part_entries))
         return layout_specs
 
@@ -288,8 +293,19 @@ class WorkList:
 
         layout = self.layout_specs[self.layout_name]
         rel_pos = layout.screw_origin + layout.screw_pitch * self.screw_counter
+        # Per-screw orientation around the screw's local Z (insertion) axis.
+        # Bit engagement is rotationally symmetric, so this only changes the
+        # visual appearance of the slot / phillips notch in camera images.
+        screw_rotmat = layout.screw_rotmat
+        if layout.screw_rotation_step_deg != 0.0:
+            angle_rad = float(np.deg2rad(
+                layout.screw_rotation_step_deg * self.screw_counter
+            ))
+            screw_rotmat = layout.screw_rotmat @ oum.rotmat_from_euler(
+                0.0, 0.0, angle_rad,
+            ).astype(np.float32)
         before_tf = oum.tf_from_rotmat_pos(self.work_base.rotmat, self.work_base.pos)
-        after_tf = before_tf @ oum.tf_from_rotmat_pos(layout.screw_rotmat, rel_pos)
+        after_tf = before_tf @ oum.tf_from_rotmat_pos(screw_rotmat, rel_pos)
         self.screw_counter += 1
         return after_tf[:3, 3].astype(np.float32), after_tf[:3, :3].astype(np.float32)
 
