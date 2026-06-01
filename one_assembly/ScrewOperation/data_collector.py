@@ -91,6 +91,9 @@ def main():
     ap.add_argument("--sequence", type=str, default=None,
                     help="ScrewConfig.sequence label used to build the output dir path")
     ap.add_argument("--mode", type=str, default=None)
+    ap.add_argument("--data_source", type=str, default=None,
+                    choices=("sim", "real"),
+                    help="Provenance of the captured images (recorded in config.yaml)")
     ap.add_argument("--skip_plan", action="store_true")
     args = ap.parse_args()
 

@@ -103,9 +103,11 @@ def main():
     ap.add_argument("--img_h", type=int, default=DEFAULT_IMG_H)
     ap.add_argument("--img_w", type=int, default=DEFAULT_IMG_W)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--data_source", default="sim", choices=("sim", "real"),
+                    help="Tag the generated dataset's provenance (default: sim)")
     args = ap.parse_args()
 
-    config = ScrewConfig()
+    config = ScrewConfig(data_source=args.data_source)
     overrides = {}
     if args.num_classes is not None:
         overrides["num_classes"] = args.num_classes

@@ -9,6 +9,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 
 from one_assembly.ScrewOperation.config import ScrewConfig
+from one_assembly.ScrewOperation.preprocess import apply_rotation_and_roi
 
 
 class SpiralDataset(Dataset):
@@ -32,14 +33,13 @@ class SpiralDataset(Dataset):
 
         self.roi1 = config.roi1
         self.roi2 = config.roi2
+        self.rotate1 = int(config.rotate1)
+        self.rotate2 = int(config.rotate2)
 
         self.tf = transforms.Compose([
             transforms.Resize(config.resize_per_cam),
             transforms.ToTensor(),
         ])
-
-    def crop(self, img: Image.Image, roi: tuple[int, int, int, int]) -> Image.Image:
-        return img.crop((roi[0], roi[1], roi[2], roi[3]))
 
     def __len__(self) -> int:
         return len(self.df)
@@ -55,8 +55,8 @@ class SpiralDataset(Dataset):
         img1 = Image.open(img1_path).convert("RGB")
         img2 = Image.open(img2_path).convert("RGB")
 
-        img1 = self.tf(self.crop(img1, self.roi1))
-        img2 = self.tf(self.crop(img2, self.roi2))
+        img1 = self.tf(apply_rotation_and_roi(img1, self.rotate1, self.roi1))
+        img2 = self.tf(apply_rotation_and_roi(img2, self.rotate2, self.roi2))
 
         x = torch.cat([img1, img2], dim=2)
         y = int(row.label)
@@ -73,8 +73,12 @@ def load_and_preprocess_pair(
         transforms.Resize(config.resize_per_cam),
         transforms.ToTensor(),
     ])
-    img1 = Image.open(cam1_path).convert("RGB").crop(config.roi1)
-    img2 = Image.open(cam2_path).convert("RGB").crop(config.roi2)
+    img1 = apply_rotation_and_roi(
+        Image.open(cam1_path).convert("RGB"), int(config.rotate1), config.roi1,
+    )
+    img2 = apply_rotation_and_roi(
+        Image.open(cam2_path).convert("RGB"), int(config.rotate2), config.roi2,
+    )
     img1 = tf(img1)
     img2 = tf(img2)
     return torch.cat([img1, img2], dim=2)

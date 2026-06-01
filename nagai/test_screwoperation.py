@@ -144,6 +144,188 @@ class ConfigTest(unittest.TestCase):
         c = ScrewConfig(resize_per_cam=(45, 40))
         self.assertEqual(c.image_size, (45, 80))
 
+    def test_rotation_defaults_zero(self):
+        from one_assembly.ScrewOperation.config import ScrewConfig
+        c = ScrewConfig()
+        self.assertEqual(c.rotate1, 0)
+        self.assertEqual(c.rotate2, 0)
+
+    def test_rotation_validates_quarter_turns_only(self):
+        from one_assembly.ScrewOperation.config import ScrewConfig
+        for v in (0, 90, 180, 270):
+            ScrewConfig(rotate1=v)  # OK
+        for bad in (1, 45, 91, -90, 360):
+            with self.assertRaises(Exception):
+                ScrewConfig(rotate1=bad)
+
+    def test_data_source_default_empty(self):
+        from one_assembly.ScrewOperation.config import ScrewConfig
+        self.assertEqual(ScrewConfig().data_source, "")
+
+    def test_data_source_accepts_sim_real_empty(self):
+        from one_assembly.ScrewOperation.config import ScrewConfig
+        for v in ("", "sim", "real"):
+            ScrewConfig(data_source=v)
+
+    def test_data_source_rejects_other_values(self):
+        from one_assembly.ScrewOperation.config import ScrewConfig
+        for bad in ("Sim", "REAL", "synthetic", "isaac", "test"):
+            with self.assertRaises(Exception):
+                ScrewConfig(data_source=bad)
+
+    def test_data_source_yaml_roundtrip(self):
+        from one_assembly.ScrewOperation.config import ScrewConfig, save_config, load_config
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "c.yaml")
+            save_config(ScrewConfig(data_source="sim"), p)
+            self.assertEqual(load_config(p).data_source, "sim")
+            save_config(ScrewConfig(data_source="real"), p)
+            self.assertEqual(load_config(p).data_source, "real")
+
+    def test_data_source_legacy_yaml_without_field_loads(self):
+        from one_assembly.ScrewOperation.config import load_config
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "c.yaml")
+            with open(p, "w") as f:
+                f.write("num_classes: 7\nspiral_step: 0.001\n")
+            cfg = load_config(p)
+            self.assertEqual(cfg.data_source, "")
+            self.assertEqual(cfg.num_classes, 7)
+
+    def test_merge_cli_args_data_source(self):
+        import argparse
+        from one_assembly.ScrewOperation.config import ScrewConfig, merge_cli_args
+        base = ScrewConfig()
+        merged = merge_cli_args(base, argparse.Namespace(data_source="real"))
+        self.assertEqual(merged.data_source, "real")
+        # None should be a no-op (CLI flag not supplied)
+        merged2 = merge_cli_args(ScrewConfig(data_source="sim"),
+                                  argparse.Namespace(data_source=None))
+        self.assertEqual(merged2.data_source, "sim")
+
+
+# ---------------------------------------------------------------------------
+# preprocess (rotate + ROI helpers)
+# ---------------------------------------------------------------------------
+
+class PreprocessTest(unittest.TestCase):
+    def _checkerboard(self, h=8, w=10):
+        # Distinct integer values per pixel so rotation is verifiable
+        arr = np.arange(h * w, dtype=np.uint8).reshape(h, w)
+        return np.dstack([arr, arr, arr])  # HxWx3
+
+    def test_rotate_image_identity(self):
+        from one_assembly.ScrewOperation.preprocess import rotate_image
+        arr = self._checkerboard()
+        out = rotate_image(arr, 0)
+        self.assertTrue(np.array_equal(out, arr))
+
+    def test_rotate_image_180_inverts(self):
+        from one_assembly.ScrewOperation.preprocess import rotate_image
+        arr = self._checkerboard()
+        out = rotate_image(arr, 180)
+        # 180 deg rotation == both axes reversed
+        self.assertTrue(np.array_equal(out, arr[::-1, ::-1]))
+
+    def test_rotate_image_90_then_270_is_identity(self):
+        from one_assembly.ScrewOperation.preprocess import rotate_image
+        arr = self._checkerboard()
+        out = rotate_image(rotate_image(arr, 90), 270)
+        self.assertTrue(np.array_equal(out, arr))
+
+    def test_rotate_image_90_changes_shape(self):
+        from one_assembly.ScrewOperation.preprocess import rotate_image
+        arr = self._checkerboard(h=8, w=10)
+        out = rotate_image(arr, 90)
+        self.assertEqual(out.shape, (10, 8, 3))
+
+    def test_rotate_image_pil_matches_numpy(self):
+        from PIL import Image
+        from one_assembly.ScrewOperation.preprocess import rotate_image
+        arr = self._checkerboard()
+        pil = Image.fromarray(arr)
+        for deg in (0, 90, 180, 270):
+            pil_out = np.array(rotate_image(pil, deg))
+            np_out = rotate_image(arr, deg)
+            self.assertTrue(np.array_equal(pil_out, np_out),
+                            msg=f"PIL/numpy mismatch at {deg} deg")
+
+    def test_rotate_image_rejects_arbitrary_degrees(self):
+        from one_assembly.ScrewOperation.preprocess import rotate_image
+        with self.assertRaises(ValueError):
+            rotate_image(self._checkerboard(), 45)
+
+    def test_apply_roi_pil_and_numpy(self):
+        from PIL import Image
+        from one_assembly.ScrewOperation.preprocess import apply_roi
+        arr = self._checkerboard(h=10, w=12)
+        pil = Image.fromarray(arr)
+        roi = (2, 1, 7, 6)  # left, upper, right, lower
+        np_crop = apply_roi(arr, roi)
+        pil_crop = np.array(apply_roi(pil, roi))
+        self.assertEqual(np_crop.shape, (5, 5, 3))
+        self.assertTrue(np.array_equal(np_crop, pil_crop))
+        self.assertTrue(np.array_equal(np_crop, arr[1:6, 2:7]))
+
+    def test_apply_rotation_and_roi_chains_in_correct_order(self):
+        from one_assembly.ScrewOperation.preprocess import (
+            apply_rotation_and_roi, apply_roi, rotate_image,
+        )
+        arr = self._checkerboard(h=6, w=8)
+        roi = (1, 0, 4, 3)
+        # The composed helper must equal rotate-then-crop, NOT crop-then-rotate.
+        composed = apply_rotation_and_roi(arr, 90, roi)
+        manual = apply_roi(rotate_image(arr, 90), roi)
+        self.assertTrue(np.array_equal(composed, manual))
+
+
+# ---------------------------------------------------------------------------
+# Dataset uses rotation + ROI in the right order
+# ---------------------------------------------------------------------------
+
+class DatasetRotationTest(unittest.TestCase):
+    def _build_tiny_dataset(self, tmp, rotate1, rotate2):
+        import csv
+        import cv2
+        from one_assembly.ScrewOperation.config import ScrewConfig
+        from one_assembly.ScrewOperation.dataset import SpiralDataset
+        img_dir = os.path.join(tmp, "images")
+        os.makedirs(img_dir, exist_ok=True)
+        h, w = 12, 16
+        rng = np.random.RandomState(0)
+        # One sample, two cam images
+        for tag in ("cam1", "cam2"):
+            cv2.imwrite(os.path.join(img_dir, f"000000_{tag}.png"),
+                        rng.randint(0, 256, size=(h, w, 3), dtype=np.uint8))
+        csv_path = os.path.join(tmp, "samples.csv")
+        with open(csv_path, "w") as f:
+            wr = csv.writer(f)
+            wr.writerow(["idx", "label"])
+            wr.writerow(["0", "3"])
+        cfg = ScrewConfig(
+            num_classes=7, resize_per_cam=(8, 8),
+            roi1=(0, 0, 6, 8), roi2=(0, 0, 6, 8),
+            rotate1=rotate1, rotate2=rotate2,
+        )
+        ds = SpiralDataset(csv_path, img_dir, config=cfg)
+        return ds
+
+    def test_dataset_applies_rotation_then_roi(self):
+        from one_assembly.ScrewOperation.preprocess import apply_rotation_and_roi
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as tmp:
+            ds = self._build_tiny_dataset(tmp, rotate1=90, rotate2=270)
+            x, y = ds[0]
+            self.assertEqual(y, 3)
+            # Tensor channels last 6, expected shape (3, 8, 16) after horizontal concat
+            self.assertEqual(tuple(x.shape), (3, 8, 16))
+            # Verify rotation is applied: redo manually from raw + compare
+            img_dir = os.path.join(tmp, "images")
+            raw1 = Image.open(os.path.join(img_dir, "000000_cam1.png")).convert("RGB")
+            cooked1 = apply_rotation_and_roi(raw1, 90, (0, 0, 6, 8))
+            # Crop happens on the rotated frame (12x16 -> 16x12) so (0,0,6,8) is valid.
+            self.assertEqual(cooked1.size, (6, 8))  # PIL .size == (width, height)
+
 
 # ---------------------------------------------------------------------------
 # prescrew

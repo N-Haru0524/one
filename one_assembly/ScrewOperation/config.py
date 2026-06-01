@@ -5,7 +5,14 @@ import os
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+
+_VALID_ROTATIONS = (0, 90, 180, 270)
+# Provenance of the captured images. Empty string means "unspecified" — kept
+# as the default so existing config.yaml files (which lack this field) load
+# without error. New captures should populate one of "sim" / "real".
+_VALID_DATA_SOURCES = ("", "sim", "real")
 
 
 class ScrewConfig(BaseModel):
@@ -14,8 +21,41 @@ class ScrewConfig(BaseModel):
     sequence: str = ""
     mode: str = ""
 
-    roi1: tuple[int, int, int, int] = (0, 0, 320, 240)
-    roi2: tuple[int, int, int, int] = (0, 0, 320, 240)
+    # Where the dataset was captured. "sim" = Isaac Sim, "real" = physical
+    # cameras. Empty string for legacy / unspecified data.
+    data_source: str = ""
+
+    @field_validator("data_source")
+    @classmethod
+    def _validate_data_source(cls, v: str) -> str:
+        if v not in _VALID_DATA_SOURCES:
+            raise ValueError(
+                f"data_source must be one of {_VALID_DATA_SOURCES}, got {v!r}"
+            )
+        return v
+
+    # ROI applied AFTER rotation, in the rotated image's pixel coordinates.
+    # Order: (left, upper, right, lower) — PIL .crop() convention.
+    # Defaults are sim-tuned 60×60 crops centred on the SD bit tip for each
+    # wrist camera at the rly_scrw pickup prescrew pose; revisit if camera
+    # mount or shank length changes.
+    roi1: tuple[int, int, int, int] = (495, 175, 555, 235)
+    roi2: tuple[int, int, int, int] = (80, 198, 140, 258)
+    # Clockwise rotation in degrees applied to each cam image BEFORE the ROI
+    # crop. Restricted to 0/90/180/270 so rotation is lossless. The raw PNG on
+    # disk is unrotated (one upgrade vs. the old wrs pipeline which baked
+    # rotation + square crop into the saved frame).
+    rotate1: int = 0
+    rotate2: int = 0
+
+    @field_validator("rotate1", "rotate2")
+    @classmethod
+    def _validate_rotation(cls, v: int) -> int:
+        if v not in _VALID_ROTATIONS:
+            raise ValueError(
+                f"rotate must be one of {_VALID_ROTATIONS} (clockwise degrees), got {v}"
+            )
+        return int(v)
 
     num_classes: int = 91
     patch_size: int = 5
