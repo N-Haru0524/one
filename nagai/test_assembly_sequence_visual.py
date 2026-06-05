@@ -411,7 +411,7 @@ def plan_place_action(robot: KHIBunri,
         use_rrt=True,
         pln_jnt=False,
         keep_holding=keep_holding,
-        toggle_dbg=False,
+        toggle_dbg=True,
     )
     print_timing_report(planner, f'pick/place {target_work.name}')
     if draft is None:

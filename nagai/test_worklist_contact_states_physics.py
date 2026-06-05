@@ -85,8 +85,8 @@ def resolve_collision_type(label):
 
 
 def build_worklist(collision_type, use_visual_offset=True):
-    # root_path = os.path.join('/home/wrs/nagai/one/one_assembly/worklists/move_object')
-    root_path = os.path.join('/home/wrs/nagai/one/one_assembly/worklists/electric_assembly')
+    # root_path = os.path.join(str(ROOT), 'one_assembly', 'worklists', 'move_object')
+    root_path = os.path.join(str(ROOT), 'one_assembly', 'worklists', 'electric_assembly')
     yaml_path = os.path.join(root_path, 'yamls')
     mesh_path = os.path.join(root_path, 'meshes')
     grasp_path = os.path.join(root_path, 'grasps')

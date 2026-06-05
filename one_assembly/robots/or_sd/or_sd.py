@@ -18,7 +18,7 @@ def prepare_ms():
     shank_lnk = orbms.Link.from_file(
         os.path.join(mesh_dir, 'shank.stl'),
         loc_rotmat=oum.rotmat_from_euler(0, 0, 0),
-        loc_pos=oum.vec(-0.199714, 0, -0.09511483),
+        loc_pos=oum.vec(-0.199714 - 0.033164, 0, -0.09511483),
         collision_type=ouc.CollisionType.MESH,
         rgb=ouc.ExtendedColor.SILVER)
 
@@ -46,10 +46,10 @@ class ORSD(oreb.EndEffectorBase, oreb.PointMixin):
         return prepare_ms()
 
     def __init__(self):
-        self.tcp_pos = oum.vec(0.199714, 0, 0.09509044)
+        self.tcp_pos = oum.vec(0.199714 - 0.033164, 0, 0.09509044)
         self.tcp_rotmat = oum.rotmat_from_axangle(ouc.StandardAxis.Y, oum.pi / 2)
         super().__init__(loc_tcp_tf=oum.tf_from_rotmat_pos(self.tcp_rotmat, self.tcp_pos))
-        self.shank_range = oum.vec(-0.033164, 0.0)
+        self.shank_range = oum.vec(0.0, 0.033164)
         self.fk(qs=[self.shank_range[0]])
         self._is_activated = False
 

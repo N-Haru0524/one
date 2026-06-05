@@ -15,7 +15,8 @@ import one.scene.scene_object as osso
 import one.scene.render_model_primitive as osrmp
 
 from one_assembly.robots.or_2fg7.or_2fg7 import OR2FG7
-from one_assembly.robots.or_sd.or_sd import ORSD
+# from one_assembly.robots.or_sd.or_sd import ORSD
+from one_assembly.robots.or_sd_cam.or_sd import ORSD
 
 _LFT_ARM_HOME = np.radians(oum.vec(0.0, 0.0, -90.0, 0.0, -90.0, -90.0))
 _RGT_ARM_HOME = np.radians(
