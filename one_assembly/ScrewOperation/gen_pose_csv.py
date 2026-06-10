@@ -326,7 +326,10 @@ def main() -> int:
                     help="Dataset stage subdir (train | infer | model). Default train.")
     ap.add_argument("--sequence", default=None,
                     help="Task sequence label (e.g. rly_scrw). Recorded in "
-                         "config.yaml only — does NOT affect the directory path.")
+                         "config.yaml only — does NOT affect the directory path. "
+                         "When omitted and --session is given, defaults to the "
+                         "full --session string so the screw index (count of "
+                         "scrw in the history) is recoverable from config.yaml.")
     ap.add_argument("--mode", default=None,
                     help="Operation mode (e.g. pick, place). Recorded in "
                          "config.yaml only — does NOT affect the directory path.")
@@ -417,7 +420,9 @@ def main() -> int:
         # Mirror data_collector.py: drop a ScrewConfig snapshot in the ep dir.
         screw_cfg = ScrewConfig(
             description=args.description or "",
-            sequence=args.sequence or "",
+            # Fall back to the full session string so the screw index (number
+            # of scrw tokens in the history) stays recoverable from config.yaml.
+            sequence=args.sequence or args.session or "",
             mode=args.mode or "",
             num_classes=args.num_classes,
             spiral_step=args.spiral_step,

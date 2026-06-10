@@ -368,7 +368,7 @@ def main():
     # ---- Episode dir
     ep_dir = args.episode_dir
     if ep_dir is None:
-        ep_dir = make_mode_dir(BASE_DIR, "infer", sequence="auto", mode="auto")
+        ep_dir = make_mode_dir(BASE_DIR, "infer")
     os.makedirs(ep_dir, exist_ok=True)
     print(f"episode dir: {ep_dir}")
 

@@ -79,23 +79,16 @@ def atomic_rename(tmp_path: Path, final_path: Path):
     Path(tmp_path).replace(Path(final_path))
 
 
-def make_mode_dir(base_dir: Path, stage: str, sequence: str = "", mode: str = "") -> str:
+def make_mode_dir(base_dir: Path, stage: str) -> str:
     """
       base_dir: Path to ScrewOperation root
       stage: 'train' | 'infer' | 'model'
-      sequence: task sequence name (e.g. 'blt_scrw', 'trmnl_scrw')
-      mode: operation mode (e.g. 'pick', 'pre_place', 'place')
       Returns next available numbered directory:
-        datasets/{sequence}/{mode}/{stage}/{NNN}/
-      When sequence or mode is empty, that segment is omitted.
+        datasets/{stage}/{NNN}/
+      Flat layout: task identifiers (sequence / mode) live in config.yaml,
+      never in the path. See docs/dataset_layout.md.
     """
-    parts = [str(base_dir), "datasets"]
-    if sequence:
-        parts.append(sequence)
-    if mode:
-        parts.append(mode)
-    parts.append(stage)
-    root = Path(os.path.join(*parts))
+    root = Path(os.path.join(str(base_dir), "datasets", stage))
     root.mkdir(parents=True, exist_ok=True)
     existing = sorted(
         int(d.name) for d in root.iterdir()
