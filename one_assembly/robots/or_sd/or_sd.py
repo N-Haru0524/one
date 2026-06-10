@@ -49,7 +49,7 @@ class ORSD(oreb.EndEffectorBase, oreb.PointMixin):
         self.tcp_pos = oum.vec(0.199714 - 0.033164, 0, 0.09509044)
         self.tcp_rotmat = oum.rotmat_from_axangle(ouc.StandardAxis.Y, oum.pi / 2)
         super().__init__(loc_tcp_tf=oum.tf_from_rotmat_pos(self.tcp_rotmat, self.tcp_pos))
-        self.shank_range = oum.vec(0.0, 0.033164)
+        self.shank_range = oum.vec(0.0, 0.033164).astype('float32')
         self.fk(qs=[self.shank_range[0]])
         self._is_activated = False
 
